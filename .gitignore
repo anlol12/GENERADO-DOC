@@ -1,0 +1,14 @@
+#Variables de entorno
+**/.env
+.env
+
+#Backend Python
+Backend/venv/
+Backend/__pycache__/
+Backend/*.pyc 
+Backend/uploads/generados/*
+!Backend/uploads/generados/.gitkeep
+
+#Frontend Node
+Frontend/node_mudules/
+Frontend/dist/
