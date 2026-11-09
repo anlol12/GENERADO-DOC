@@ -1,11 +1,26 @@
 /** @type {import('tailwindcss').Config} */
 export default {
   content: [
+    //Se definer la rutas y extexiones de archivos donde buscara clases a utilizar
     "./index.html",
     "./src/**/*.{js,ts,jsx,tsx}",
   ],
   theme: {
-    extend: {},
+    extend: {
+      //Palestas de colores del proyecto 
+      colors:{
+        primary: '#4b3bff',        // --primary-blue
+        'primary-dark': '#3a2ce0', // hover de botones azules
+        'bg-light': '#f4f5f7',     // --bg-light
+        card: '#d1d1d6',           // --card-grey
+        'card-hover': '#b0b0b5',   // gris del hover
+        main: '#111111',           // --text-main
+        muted: '#888888',          // --text-muted
+        'brand-red': '#e61e25',    // --red
+      },
+      //Fuente tipográfica
+      fontFamily: {sans: ['Poppins', 'sans-serif']},
+    },
   },
   plugins: [],
 }

@@ -10,7 +10,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "axion": "^0.1.0",
+    "axios": "^1.21.0",
     "docx-preview": "^0.4.1",
     "jszip": "^3.10.2",
     "lucide-react": "^1.47.0",
