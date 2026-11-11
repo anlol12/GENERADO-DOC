@@ -1,20 +1,22 @@
 import { Link } from "./Link";
+import { User } from 'lucide-react'
 
 
 type ActivePega = 'inicio' | 'documentos' | 'ayuda';
 
 interface ToHeaderProps {
     active: ActivePega;
+    showUser?: boolean;
 }
 
 const navItems: {id: ActivePega; label: string; href: string}[] = [
     {id: 'inicio', label: 'Inicio', href: '/'},
     {id: 'documentos', label: 'Mis Documentos', href: '/mis-documentos'},
-    {id: 'ayuda', label: 'Ayuda', href: '#'}
+    {id: 'ayuda', label: 'Ayuda', href: '/ayuda'}
 ]
 
 
-export default function TopHeader({active}: ToHeaderProps){
+export default function TopHeader({active, showUser = false}: ToHeaderProps){
     return(
          <header className="flex shrink-0 items-center justify-between rounded-b-[20px] bg-gradient-to-b from-[#e6e6e6] to-[#d4d4d4] px-10 py-3 shadow-[0_2px_5px_rgba(0,0,0,0.1)]">
       <Link
@@ -40,6 +42,11 @@ export default function TopHeader({active}: ToHeaderProps){
           </Link>
         ))}
       </nav>
+      { showUser && (
+        <div className ="flex h-[35px] w-[35px] items-center justify-center rounded-full border border-black">
+        <User className="h-5 w-5" strokeWidth={2}/>
+        </div>
+      )}
       </header>
     );
 }
