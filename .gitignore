@@ -1,14 +1,79 @@
-#Variables de entorno
-**/.env
+# ── Secretos y entorno ───────────────────────────
 .env
+.env.*
+!.env.example
+*.local
 
-#Backend Python
-Backend/venv/
-Backend/__pycache__/
-Backend/*.pyc 
-Backend/uploads/generados/*
-!Backend/uploads/generados/.gitkeep
+# ── Backend (Python) ─────────────────────────────
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
-#Frontend Node
-Frontend/node_mudules/
-Frontend/dist/
+# Base de datos local
+*.db
+*.sqlite
+*.sqlite3
+
+# Archivos subidos / generados (conservar estructura)
+backend/uploads/plantillas/*
+!backend/uploads/plantillas/.gitkeep
+backend/uploads/generados/*
+!backend/uploads/generados/.gitkeep
+
+# ── Frontend (Node / Vite) ───────────────────────
+node_modules/
+dist/
+dist-ssr/
+*.tsbuildinfo
+coverage/
+
+# ── Logs ─────────────────────────────────────────
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# ── Herramientas de IA (no subir a GitHub) ───────
+CLAUDE.md
+.claude/
+.claudeignore
+.mcp.json
+.codex/
+CODEX.md
+AGENTS.md
+.gemini/
+GEMINI.md
+.antigravity/
+.cursor/
+.cursorignore
+.cursorrules
+.windsurf/
+.windsurfrules
+.github/copilot*
+.github/instructions/
+.aider*
+.continue/
+.clinerules*
+.roo/
+.kiro/
+
+# ── Editores y sistema operativo ─────────────────
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?

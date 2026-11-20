@@ -1,6 +1,6 @@
 import { Link } from "./Link";
 
-export type AdminPage = 'resumen' | 'usuarios' | 'reportes' | 'configuracion';
+export type AdminPage = 'resumen' | 'usuarios' | 'reportes' | 'configuracion' | 'documentos';
 
 interface AdminSidebarProps {
     active: AdminPage;
@@ -12,13 +12,14 @@ const adminItems: { id: AdminPage; label: string; href: string }[] = [
   { id: 'usuarios', label: 'Usuarios', href: '/usuarios' },
   { id: 'reportes', label: 'Reportes', href: '/reportes' },
   { id: 'configuracion', label: 'Configuración', href: '/configuracion' },
+  { id: 'documentos', label: 'Documentos', href: '/admin/documentos' },
 ];
 
 export default function AdminSidebar({ active, role = 'Admin' }: AdminSidebarProps) {
   return (
     <aside className="flex w-[240px] shrink-0 flex-col gap-[30px] border-r border-[#e0e0e0] bg-white p-[25px]">
       <Link
-        href="/"
+        href="/inicio"
         className="inline-flex h-11 cursor-pointer items-center justify-center rounded-full bg-brand-red px-9 shadow-[0_4px_10px_rgba(230,30,37,0.35)] transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_6px_14px_rgba(230,30,37,0.45)]"
       >
         <img src="/logo.jpg" alt="Creativa Logo" className="block h-7 w-auto rounded-sm object-contain" />
