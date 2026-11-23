@@ -38,3 +38,22 @@ class Documento(Base):
         default=lambda: datetime.now(timezone.utc),
         onupdate=lambda: datetime.now(timezone.utc),
     )
+
+
+class Reporte(Base):
+    __tablename__ = "reportes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    usuario_id = Column(Integer, ForeignKey("usuarios.id"), nullable=True)
+    usuario_nombre = Column(String, nullable=False)
+    titulo = Column(String, nullable=False)
+    descripcion = Column(Text, nullable=False)
+    estado = Column(String, default="nuevo", nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+
+
+class ConfiguracionSistema(Base):
+    __tablename__ = "configuracion_sistema"
+
+    id = Column(Integer, primary_key=True)
+    correo_soporte = Column(String, nullable=False)

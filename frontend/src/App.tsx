@@ -7,6 +7,9 @@ import Ayuda from './pages/Ayuda';
 import Resumen from './pages/Resumen';
 import DocumentHome from './pages/DocumentHome';
 import AdminEditor from './pages/AdminEditor';
+import Usuarios from './pages/Usuarios';
+import Reportes from './pages/Reportes';
+import Configuracion from './pages/Configuracion';
 
 export default function App() {
   const [path, setPath] = useState(() => window.location.pathname);
@@ -41,6 +44,16 @@ export default function App() {
       return <Inicio />;
     }
     return <Resumen />;
+  }
+
+  if (path === '/usuarios' || path === '/reportes' || path === '/configuracion') {
+    if (usuario.rol !== 'admin') {
+      window.location.replace('/inicio');
+      return <Inicio />;
+    }
+    if (path === '/usuarios') return <Usuarios />;
+    if (path === '/reportes') return <Reportes />;
+    return <Configuracion />;
   }
 
   if (path === '/admin/documentos') {

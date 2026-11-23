@@ -8,10 +8,14 @@ interface UploadDocumentModalProps {
   initialFile?: File | null;
   nextName: string;
   onClose: () => void;
-  onCreate: (file: File, name: string, openEditor: boolean) => void;
+  onCreate: (file: File, name: string, openEditor: boolean) => Promise<void>;
 }
 
-const UNSUPPORTED = 'Formato no soportado. Sube un archivo .pdf o .docx';
+const UNSUPPORTED = 'Formato no soportado. Sube un archivo .pdf';
+
+function isPdf(f: File): boolean {
+  return f.name.toLowerCase().endsWith('.pdf');
+}
 
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -25,21 +29,22 @@ export default function UploadDocumentModal({
   onClose,
   onCreate,
 }: UploadDocumentModalProps) {
-  const validInitial = initialFile && detectDocKind(initialFile) ? initialFile : null;
+  const validInitial = initialFile && isPdf(initialFile) ? initialFile : null;
   const [file, setFile] = useState<File | null>(validInitial);
   const [name, setName] = useState('');
   const [error, setError] = useState(initialFile && !validInitial ? UNSUPPORTED : '');
+  const [uploading, setUploading] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && !uploading && onClose();
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
+  }, [onClose, uploading]);
 
   function pick(f: File | undefined) {
-    if (!f) return;
-    if (!detectDocKind(f)) {
+    if (!f || uploading) return;
+    if (!isPdf(f)) {
       setFile(null);
       setError(UNSUPPORTED);
       return;
@@ -53,17 +58,24 @@ export default function UploadDocumentModal({
     e.target.value = '';
   }
 
-  function submit(openEditor: boolean) {
-    if (!file) return;
-    onCreate(file, name.trim() || nextName, openEditor);
+  async function submit(openEditor: boolean) {
+    if (!file || uploading) return;
+    setUploading(true);
+    setError('');
+    try {
+      await onCreate(file, name.trim() || nextName, openEditor);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Error al subir el documento');
+      setUploading(false);
+    }
   }
 
-  const disabled = !file;
+  const disabled = !file || uploading;
 
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
-      onMouseDown={(e) => e.target === e.currentTarget && onClose()}
+      onMouseDown={(e) => e.target === e.currentTarget && !uploading && onClose()}
     >
       <div
         role="dialog"
@@ -82,7 +94,8 @@ export default function UploadDocumentModal({
             type="button"
             aria-label="Cerrar"
             onClick={onClose}
-            className="flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-full border-none bg-transparent text-main transition-colors duration-200 hover:bg-card"
+            disabled={uploading}
+            className="flex h-8 w-8 shrink-0 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 items-center justify-center rounded-full border-none bg-transparent text-main transition-colors duration-200 hover:bg-card"
           >
             <X className="h-4 w-4" strokeWidth={2.5} />
           </button>
@@ -91,7 +104,7 @@ export default function UploadDocumentModal({
         <input
           ref={inputRef}
           type="file"
-          accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+          accept=".pdf,application/pdf"
           onChange={handleInput}
           className="hidden"
         />
@@ -111,7 +124,8 @@ export default function UploadDocumentModal({
             <button
               type="button"
               onClick={() => inputRef.current?.click()}
-              className="shrink-0 cursor-pointer rounded-[20px] border-none bg-card px-3 py-1.5 text-[11px] font-semibold text-main transition-colors duration-200 hover:bg-card-hover"
+              disabled={uploading}
+              className="shrink-0 cursor-pointer rounded-[20px] border-none bg-card px-3 py-1.5 text-[11px] font-semibold text-main transition-colors duration-200 hover:bg-card-hover disabled:cursor-not-allowed disabled:opacity-50"
             >
               Cambiar
             </button>
@@ -128,7 +142,7 @@ export default function UploadDocumentModal({
             className="mb-1 flex w-full cursor-pointer flex-col items-center gap-1 rounded-[15px] border-2 border-dashed border-card-hover bg-bg-light px-4 py-8 transition-colors duration-200 hover:border-primary"
           >
             <span className="text-sm font-semibold text-main">Seleccionar archivo</span>
-            <span className="text-[11px] text-muted">PDF o Word (.docx), o arrástralo aquí</span>
+            <span className="text-[11px] text-muted">Solo PDF (.pdf), o arrástralo aquí</span>
           </button>
         )}
         {error && <p className="mt-2 text-xs font-semibold text-brand-red">{error}</p>}
@@ -138,7 +152,8 @@ export default function UploadDocumentModal({
           <input
             value={name}
             onChange={(e) => setName(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && submit(false)}
+            onKeyDown={(e) => e.key === 'Enter' && void submit(false)}
+            disabled={uploading}
             placeholder={nextName}
             maxLength={80}
             className="w-full rounded-[10px] bg-bg-light px-3 py-2.5 text-sm text-main outline-none focus:ring-2 focus:ring-primary/40"
@@ -152,22 +167,23 @@ export default function UploadDocumentModal({
           <button
             type="button"
             onClick={onClose}
-            className="cursor-pointer rounded-[20px] border-none bg-transparent px-5 py-2.5 text-xs font-semibold text-muted transition-colors duration-200 hover:bg-bg-light hover:text-main"
+            disabled={uploading}
+            className="cursor-pointer rounded-[20px] border-none bg-transparent px-5 py-2.5 text-xs font-semibold text-muted transition-colors duration-200 hover:bg-bg-light hover:text-main disabled:cursor-not-allowed disabled:opacity-50"
           >
             Cancelar
           </button>
           <button
             type="button"
             disabled={disabled}
-            onClick={() => submit(false)}
+            onClick={() => void submit(false)}
             className="cursor-pointer rounded-[20px] border-none bg-card px-5 py-2.5 text-xs font-semibold text-main transition-colors duration-200 hover:bg-card-hover disabled:cursor-not-allowed disabled:opacity-50"
           >
-            Crear
+            {uploading ? 'Subiendo…' : 'Crear'}
           </button>
           <button
             type="button"
             disabled={disabled}
-            onClick={() => submit(true)}
+            onClick={() => void submit(true)}
             className="cursor-pointer rounded-[20px] border-none bg-primary px-5 py-2.5 text-xs font-semibold text-white transition-colors duration-200 hover:bg-primary-dark disabled:cursor-not-allowed disabled:opacity-50"
           >
             Crear y modificar

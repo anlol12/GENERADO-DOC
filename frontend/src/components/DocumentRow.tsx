@@ -1,6 +1,7 @@
 // src/components/DocumentRow.tsx
 import { useState } from 'react';
-import { Check, FileText, Send, UserCheck, UserMinus, UserPlus, X } from 'lucide-react';
+import { Check, FileText, Send, Trash2, UserCheck, UserMinus, UserPlus, X } from 'lucide-react';
+import { deleteDocument } from '../store/documentStore';
 import type { DocItem, UsuarioOption } from '../store/documentStore';
 import { formatModified } from '../utils/formatDate';
 
@@ -8,7 +9,7 @@ interface DocumentRowProps {
   doc: DocItem;
   usuarios: UsuarioOption[];
   onOpen: (id: string) => void;
-  onTogglePublish: (id: string) => void;
+  onTogglePublish: (id: string) => void | Promise<void>;
   onAssignUser: (docId: string, userId: number | null) => Promise<void>;
 }
 
@@ -27,6 +28,8 @@ export default function DocumentRow({
     doc.assignedUserId ? String(doc.assignedUserId) : '',
   );
   const [savingAssign, setSavingAssign] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [rowError, setRowError] = useState('');
 
   const [search, setSearch] = useState('');
 
@@ -55,12 +58,80 @@ export default function DocumentRow({
   }
 
   async function handleRevoke() {
+    if (
+      !window.confirm(
+        `¿Revocar el documento a ${doc.assignedUserName || 'este usuario'}? ` +
+          'Si ya trabajó en él, conservará su copia en Mis Documentos y la plantilla quedará disponible de nuevo.',
+      )
+    ) {
+      return;
+    }
     setSavingAssign(true);
+    setRowError('');
     try {
       await onAssignUser(doc.id, null);
       setPickerOpen(false);
+    } catch (err) {
+      setRowError(err instanceof Error ? err.message : 'No se pudo revocar al usuario');
     } finally {
       setSavingAssign(false);
+    }
+  }
+
+  async function handleTogglePublish() {
+    if (busy) return;
+    if (
+      !doc.published &&
+      doc.assignedUserId &&
+      !window.confirm(
+        `Este documento está asignado a ${doc.assignedUserName || 'un usuario'}. ¿Publicarlo en la galería de todos modos?`,
+      )
+    ) {
+      return;
+    }
+    setBusy(true);
+    setRowError('');
+    try {
+      await onTogglePublish(doc.id);
+    } catch (err) {
+      setRowError(err instanceof Error ? err.message : 'No se pudo cambiar la publicación');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function handleToggleAssignPicker() {
+    if (
+      !pickerOpen &&
+      doc.published &&
+      !doc.assignedUserId &&
+      !window.confirm(
+        'Este documento está publicado en la galería. ¿Quieres mandarlo a un usuario en específico de todos modos?',
+      )
+    ) {
+      return;
+    }
+    setSelectedUserId(doc.assignedUserId ? String(doc.assignedUserId) : '');
+    setSearch('');
+    setPickerOpen((v) => !v);
+  }
+
+  async function handleDelete() {
+    if (busy) return;
+    if (
+      !window.confirm(
+        `¿Eliminar «${doc.name}»? Se borrará la plantilla y las copias sin envíos; las copias con trabajo completado se conservan.`,
+      )
+    ) {
+      return;
+    }
+    setBusy(true);
+    setRowError('');
+    try {
+      await deleteDocument(doc.id);
+    } catch (err) {
+      setRowError(err instanceof Error ? err.message : 'No se pudo eliminar el documento');
+      setBusy(false);
     }
   }
 
@@ -104,11 +175,12 @@ export default function DocumentRow({
               <button
                 type="button"
                 title="Quitar este documento de la galería de Inicio"
+                disabled={busy}
                 onClick={(e) => {
                   e.stopPropagation();
-                  onTogglePublish(doc.id);
+                  void handleTogglePublish();
                 }}
-                className="inline-flex cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-[20px] border-none bg-white px-3.5 py-2 text-xs font-semibold text-main ring-1 ring-primary/40 transition-colors duration-200 hover:bg-bg-light"
+                className="inline-flex cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-[20px] border-none bg-white px-3.5 py-2 text-xs font-semibold text-main ring-1 ring-primary/40 transition-colors duration-200 hover:bg-bg-light disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <Check className="h-3.5 w-3.5 text-primary" strokeWidth={2.5} />
                 Quitar publicación
@@ -116,11 +188,12 @@ export default function DocumentRow({
             ) : (
               <button
                 type="button"
+                disabled={busy}
                 onClick={(e) => {
                   e.stopPropagation();
-                  onTogglePublish(doc.id);
+                  void handleTogglePublish();
                 }}
-                className="inline-flex cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-[20px] border-none bg-primary px-3.5 py-2 text-xs font-semibold text-white transition-colors duration-200 hover:bg-primary-dark"
+                className="inline-flex cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-[20px] border-none bg-primary px-3.5 py-2 text-xs font-semibold text-white transition-colors duration-200 hover:bg-primary-dark disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <Send className="h-3.5 w-3.5" strokeWidth={2} />
                 Publicar
@@ -129,14 +202,13 @@ export default function DocumentRow({
 
             <button
               type="button"
+              disabled={busy}
               onClick={(e) => {
                 e.stopPropagation();
-                setSelectedUserId(doc.assignedUserId ? String(doc.assignedUserId) : '');
-                setSearch('');
-                setPickerOpen((v) => !v);
+                handleToggleAssignPicker();
               }}
               title="Mandar este documento a una persona en específico"
-              className={`inline-flex cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-[20px] border-none px-3.5 py-2 text-xs font-semibold transition-colors duration-200 ${
+              className={`inline-flex cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 items-center gap-1.5 whitespace-nowrap rounded-[20px] border-none px-3.5 py-2 text-xs font-semibold transition-colors duration-200 ${
                 doc.assignedUserId
                   ? 'bg-white text-primary ring-1 ring-primary/40 hover:bg-bg-light'
                   : 'bg-white text-main hover:bg-bg-light'
@@ -161,7 +233,7 @@ export default function DocumentRow({
               <button
                 type="button"
                 title="Quitar la asignación al usuario actual"
-                disabled={savingAssign}
+                disabled={savingAssign || busy}
                 onClick={(e) => {
                   e.stopPropagation();
                   void handleRevoke();
@@ -172,7 +244,24 @@ export default function DocumentRow({
                 Revocar usuario
               </button>
             )}
+
+            <button
+              type="button"
+              title="Eliminar este documento"
+              disabled={busy}
+              onClick={(e) => {
+                e.stopPropagation();
+                void handleDelete();
+              }}
+              className="inline-flex cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-[20px] border-none bg-brand-red px-3.5 py-2 text-xs font-semibold text-white transition-opacity duration-200 hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Trash2 className="h-3.5 w-3.5" strokeWidth={2.2} />
+              Eliminar
+            </button>
           </div>
+          {rowError && (
+            <p className="w-full text-right text-[11px] font-semibold text-brand-red">{rowError}</p>
+          )}
         </div>
       </div>
 
@@ -211,17 +300,6 @@ export default function DocumentRow({
             >
               {savingAssign ? 'Guardando…' : 'Confirmar'}
             </button>
-
-            {doc.assignedUserId && (
-              <button
-                type="button"
-                disabled={savingAssign}
-                onClick={() => void handleRevoke()}
-                className="cursor-pointer rounded-[16px] border-none bg-brand-red px-4 py-1.5 text-xs font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-50"
-              >
-                Quitar asignación actual
-              </button>
-            )}
           </form>
 
           <button

@@ -7,7 +7,6 @@ import DocumentRow, { ACTION_COL, DATE_COL } from '../components/DocumentRow';
 import {
   addDocument,
   assignDocumentToUser,
-  fetchDocuments,
   fetchUsuarios,
   isDocumentsLoading,
   nextDocumentName,
@@ -26,7 +25,6 @@ export default function DocumentHome() {
   const [errorMsg, setErrorMsg] = useState('');
 
   useEffect(() => {
-    void fetchDocuments();
     fetchUsuarios()
       .then(setUsuarios)
       .catch(() => setUsuarios([]));
@@ -60,18 +58,14 @@ export default function DocumentHome() {
   }
 
   async function handleCreate(file: File, name: string, openEditor: boolean) {
-    try {
-      setErrorMsg('');
-      const doc = await addDocument(file, name);
-      closeModal();
-      if (openEditor) {
-        openInEditor(doc.id);
-      } else {
-        setNotice(`«${doc.name}» se guardó en el servidor.`);
-      }
-    } catch (err) {
-      closeModal();
-      setErrorMsg(err instanceof Error ? err.message : 'Error al subir el documento');
+    // El modal captura el error, lo muestra y permanece abierto.
+    setErrorMsg('');
+    const doc = await addDocument(file, name);
+    closeModal();
+    if (openEditor) {
+      openInEditor(doc.id);
+    } else {
+      setNotice(`«${doc.name}» se guardó en el servidor.`);
     }
   }
 

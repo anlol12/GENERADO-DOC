@@ -34,7 +34,7 @@ export default function AdminSidebar({ active, role = 'Admin' }: AdminSidebarPro
             className={`cursor-pointer rounded-[20px] px-[15px] py-2.5 text-sm transition-all duration-200 ${
               item.id === active
                 ? 'bg-primary font-semibold text-white'
-                : 'font-medium text-main hover:bg-[#f0f0f0]'
+                : 'bg-white font-medium text-main hover:bg-[#f0f0f0]'
             }`}
           >
             {item.label}

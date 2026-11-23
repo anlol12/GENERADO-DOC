@@ -708,6 +708,7 @@ export default function AdminEditor() {
   const [boxes, setBoxes] = useState<MappedBox[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [liveValues, setLiveValues] = useState<Record<string, string>>({});
+  const [isDirty, setIsDirty] = useState(false);
 
   const [notice, setNotice] = useState('');
   const [saving, setSaving] = useState(false);
@@ -718,6 +719,16 @@ export default function AdminEditor() {
   const [renderStatus, setRenderStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
   const [renderError, setRenderError] = useState('');
   const [pageRects, setPageRects] = useState<PageRect[]>([]);
+
+  useEffect(() => {
+    if (!isDirty) return;
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [isDirty]);
 
   const measurePages = useCallback(() => {
     const host = hostRef.current;
@@ -877,18 +888,23 @@ export default function AdminEditor() {
     try {
       const created = await addDocument(f, f.name);
       setDocId(created.id);
+      const url = new URL(window.location.href);
+      url.searchParams.set('doc', created.id);
+      window.history.replaceState({}, '', url);
       setFile(f);
       setDocName(created.name);
       setIsEditingName(false);
       setBoxes([]);
       setSelectedId(null);
       setLiveValues({});
+      setIsDirty(false);
     } catch (err) {
       setNotice(err instanceof Error ? err.message : 'Error al subir archivo');
     }
   }
 
   function handleExitDocument() {
+    if (isDirty && !window.confirm('Hay cambios sin guardar. ¿Deseas salir sin guardar?')) return;
     window.history.pushState({}, '', '/admin/documentos');
     window.dispatchEvent(new PopStateEvent('popstate'));
     window.scrollTo(0, 0);
@@ -904,6 +920,9 @@ export default function AdminEditor() {
         const created = await addDocument(file, docName || file.name);
         targetId = created.id;
         setDocId(targetId);
+        const url = new URL(window.location.href);
+        url.searchParams.set('doc', targetId);
+        window.history.replaceState({}, '', url);
       }
 
       await saveDocumentTemplate(targetId, {
@@ -912,6 +931,8 @@ export default function AdminEditor() {
         boxes,
         detected_fonts: detectedFonts,
       });
+
+      setIsDirty(false);
 
       setSavedToast(true);
       window.setTimeout(() => setSavedToast(false), 2000);
@@ -929,7 +950,10 @@ export default function AdminEditor() {
 
   function commitDocName() {
     const trimmed = tempDocName.trim();
-    if (trimmed) setDocName(trimmed);
+    if (trimmed && trimmed !== docName) {
+      setDocName(trimmed);
+      setIsDirty(true);
+    }
     setIsEditingName(false);
   }
 
@@ -938,6 +962,7 @@ export default function AdminEditor() {
     setLabels((prev) => [prev[0], SIGNATURE_LABEL, ...prev.slice(1)]);
     setActiveLabelId(SIGNATURE_LABEL.id);
     setBoxKind('field');
+    setIsDirty(true);
   }
 
   function addLabel() {
@@ -955,9 +980,11 @@ export default function AdminEditor() {
     setNewLabel('');
     setNewDataType('any');
     setNewDashRule('none');
+    setIsDirty(true);
   }
 
   function updateLabelConfig(id: string, changes: Partial<FieldLabel>) {
+    setIsDirty(true);
     setLabels((prev) =>
       prev.map((l) => {
         if (l.id !== id) return l;
@@ -986,7 +1013,15 @@ export default function AdminEditor() {
 
   function removeLabel(id: string) {
     if (id === 'firma') return;
+    const removedLabel = labels.find((label) => label.id === id);
+    const associatedBoxes = boxes.filter(
+      (box) => box.kind === 'field' && (box.labelId === id || box.label === removedLabel?.name),
+    );
+    if (associatedBoxes.length > 0 && !window.confirm(`Esta etiqueta tiene ${associatedBoxes.length} caja(s). ¿Deseas eliminar la etiqueta y sus cajas?`)) return;
     setLabels((prev) => prev.filter((l) => l.id !== id));
+    setBoxes((prev) => prev.filter((box) => !associatedBoxes.some((associated) => associated.id === box.id)));
+    if (selectedId && associatedBoxes.some((box) => box.id === selectedId)) setSelectedId(null);
+    setIsDirty(true);
     if (activeLabelId === id) setActiveLabelId(null);
     setLiveValues((prev) => {
       const copy = { ...prev };
@@ -999,19 +1034,10 @@ export default function AdminEditor() {
     const formatted = formatFieldValue(rawInput, label.dataType, label.dashRule);
     setLiveValues((prev) => ({ ...prev, [label.id]: formatted }));
 
-    if (label.dataType !== 'signature') {
-      setBoxes((prev) =>
-        prev.map((b) => {
-          if (b.kind === 'field' && (b.labelId === label.id || b.label === label.name)) {
-            return adaptBoxDimensions(b, formatted || label.name);
-          }
-          return b;
-        }),
-      );
-    }
   }
 
   function removeLabelFromDocument(label: FieldLabel) {
+    setIsDirty(true);
     setBoxes((prev) => {
       const remaining = prev.filter(
         (b) => !(b.kind === 'field' && (b.labelId === label.id || b.label === label.name)),
@@ -1056,10 +1082,12 @@ export default function AdminEditor() {
 
     const box = adaptBoxDimensions(rawBox);
     setBoxes((prev) => [...prev, box]);
+    setIsDirty(true);
     setSelectedId(box.id);
   }
 
   function updateBox(id: string, changes: Partial<MappedBox>) {
+    setIsDirty(true);
     setBoxes((prev) =>
       prev.map((b) => {
         if (b.id !== id) return b;
@@ -1071,6 +1099,7 @@ export default function AdminEditor() {
   }
 
   function deleteBox(id: string) {
+    setIsDirty(true);
     setBoxes((prev) => {
       const target = prev.find((b) => b.id === id);
       const next = prev.filter((b) => b.id !== id);
@@ -1184,7 +1213,7 @@ export default function AdminEditor() {
               Subir documento
               <input
                 type="file"
-                accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                accept=".pdf"
                 onChange={handleFile}
                 className="hidden"
               />
@@ -1296,6 +1325,7 @@ export default function AdminEditor() {
                 {placedLabels.length} activas
               </span>
             </div>
+            <p className="mb-3 text-[10px] text-muted">Los datos que escribas aquí son solo una vista previa de prueba.</p>
 
             {placedLabels.length === 0 ? (
               <p className="rounded-[10px] bg-bg-light p-3 text-xs text-muted">
@@ -1725,10 +1755,14 @@ export default function AdminEditor() {
                     .filter((b) => b.page === rect.page)
                     .map((box) => {
                       const key = box.labelId || box.label;
+                      const displayBox =
+                        viewMode === 'live' && box.kind === 'field'
+                          ? adaptBoxDimensions(box, liveValues[key] || box.label)
+                          : box;
                       return (
                         <MappedBoxItem
                           key={box.id}
-                          box={box}
+                          box={displayBox}
                           rect={rect}
                           selected={box.id === selectedId}
                           editMode={editMode}

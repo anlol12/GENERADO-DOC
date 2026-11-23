@@ -1,39 +1,33 @@
+import { useEffect, useState } from 'react';
 import DashboardLayout from '../components/DashboardLayout';
 import StatCard from '../components/StatCard';
 import ActivityItem from '../components/ActivityItem';
+import { apiFetch } from '../utils/api';
+import type { AdminResumen } from '../types/admin';
 
-const stats = [
-  { label: 'Documentos generados', value: 6 },
-  { label: 'Usuarios activos', value: 2 },
-  { label: 'Reportes', value: 1 },
-];
-
-const activities: { id: number; name: string; status: 'green' | 'red' }[] = [
-  { id: 1, name: 'Mark Gonzales', status: 'green' },
-  { id: 2, name: 'Jhon Arevalo', status: 'green' },
-  { id: 3, name: 'Andres Rodriguez', status: 'red' },
-];
+function relativeTime(value: string) {
+  const minutes = Math.max(0, Math.floor((Date.now() - new Date(value).getTime()) / 60000));
+  if (minutes < 60) return `hace ${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `hace ${hours} h`;
+  return `hace ${Math.floor(hours / 24)} días`;
+}
 
 export default function Resumen() {
-  return (
-    <DashboardLayout active="resumen">
-      <div className="mb-[30px]">
-        <h1 className="text-[28px] font-bold">Resumen-General</h1>
-        <p className="text-sm font-semibold text-primary">Actividad semanal</p>
-      </div>
-
-      <div className="mb-10 flex gap-5">
-        {stats.map((stat) => (
-          <StatCard key={stat.label} label={stat.label} value={stat.value} />
-        ))}
-      </div>
-
-      <h3 className="mb-5 text-base font-semibold">Actividades Recientes</h3>
-      <div className="flex flex-col gap-[15px]">
-        {activities.map((a) => (
-          <ActivityItem key={a.id} name={a.name} status={a.status} />
-        ))}
-      </div>
-    </DashboardLayout>
-  );
+  const [data, setData] = useState<AdminResumen | null>(null);
+  const [error, setError] = useState('');
+  useEffect(() => { apiFetch<AdminResumen>('/api/admin/resumen').then(setData).catch((e: Error) => setError(e.message)); }, []);
+  return <DashboardLayout active="resumen">
+    <div className="mb-8"><h1 className="text-[28px] font-bold">Resumen</h1><p className="text-sm font-semibold text-primary">General</p><p className="mt-1 text-sm text-gray-500">Actividad semanal</p></div>
+    {error && <p role="alert" className="mb-4 text-sm text-brand-red">{error}</p>}
+    <div className="mb-10 grid gap-5 sm:grid-cols-3">
+      <StatCard label="Documentos generados" value={data?.documentos_generados ?? '—'} />
+      <StatCard label="Usuarios activos" value={data?.usuarios_activos ?? '—'} />
+      <StatCard label="Reportes" value={data?.reportes_pendientes ?? '—'} />
+    </div>
+    <h2 className="mb-5 text-base font-semibold">Actividades Recientes</h2>
+    {!data && !error ? <p className="text-sm text-gray-500">Cargando actividades…</p> : null}
+    {data?.actividades_recientes.length === 0 && <p className="text-sm text-gray-500">No hay actividades recientes.</p>}
+    <div className="flex flex-col gap-3">{data?.actividades_recientes.map((a) => <div key={a.id} className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-[10px] bg-white px-4 py-3 text-sm"><ActivityItem name={a.activo ? 'Activo' : 'Inactivo'} status={a.activo ? 'green' : 'red'} /><strong>{a.usuario}</strong><span className="flex-1">{a.descripcion}</span><time className="text-gray-500">{relativeTime(a.fecha)}</time></div>)}</div>
+  </DashboardLayout>;
 }

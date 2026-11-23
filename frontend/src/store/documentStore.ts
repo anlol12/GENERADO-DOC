@@ -1,6 +1,7 @@
 // src/store/documentStore.ts
 import { useSyncExternalStore } from 'react';
 import type { DetectedFontInfo, FieldLabel, MappedBox } from '../pages/AdminEditor';
+import { apiFetch, apiFetchBlob } from '../utils/api';
 
 export type DocKind = 'pdf' | 'docx';
 
@@ -13,6 +14,7 @@ export interface DocItem {
   published: boolean;
   assignedUserId: number | null;
   assignedUserName: string | null;
+  revocadoEnOrigen?: boolean;
 }
 
 export interface DocDetail extends DocItem {
@@ -29,7 +31,6 @@ export interface UsuarioOption {
   activo: boolean;
 }
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 let docs: DocItem[] = [];
 let loadingDocs = false;
@@ -76,9 +77,7 @@ export async function fetchDocuments(): Promise<DocItem[]> {
   loadingDocs = true;
   emit();
   try {
-    const res = await fetch(`${API_URL}/api/documentos`);
-    if (!res.ok) throw new Error('Error al cargar documentos');
-    docs = await res.json();
+    docs = await apiFetch<DocItem[]>('/api/documentos');
     return docs;
   } catch (err) {
     console.error(err);
@@ -90,7 +89,15 @@ export async function fetchDocuments(): Promise<DocItem[]> {
 }
 
 export async function fetchUsuarios(): Promise<UsuarioOption[]> {
-  const res = await fetch(`${API_URL}/api/admin/usuarios`);
+  const token = localStorage.getItem('token');
+  const res = await fetch(`${API_URL}/api/admin/usuarios`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (res.status === 401) {
+    localStorage.removeItem('token');
+    localStorage.removeItem('usuario');
+    window.location.replace('/login');
+  }
   if (!res.ok) throw new Error('Error al obtener usuarios');
   return res.json();
 }
@@ -100,17 +107,11 @@ export async function addDocument(file: File, name: string): Promise<DocDetail> 
   formData.append('file', file);
   formData.append('name', name.trim() || nextDocumentName());
 
-  const res = await fetch(`${API_URL}/api/documentos`, {
+  const created: DocDetail = await apiFetch('/api/documentos', {
     method: 'POST',
     body: formData,
   });
 
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.detail || 'No se pudo subir el documento');
-  }
-
-  const created: DocDetail = await res.json();
   docs = [created, ...docs.filter((d) => d.id !== created.id)];
   emit();
   return created;
@@ -120,13 +121,9 @@ export async function loadDocumentForEditor(
   id: string,
 ): Promise<{ doc: DocDetail; file: File } | null> {
   try {
-    const metaRes = await fetch(`${API_URL}/api/documentos/${encodeURIComponent(id)}`);
-    if (!metaRes.ok) return null;
-    const doc: DocDetail = await metaRes.json();
-
-    const fileRes = await fetch(`${API_URL}/api/documentos/${encodeURIComponent(id)}/archivo`);
-    if (!fileRes.ok) return null;
-    const blob = await fileRes.blob();
+    const path = `/api/documentos/${encodeURIComponent(id)}`;
+    const doc = await apiFetch<DocDetail>(path);
+    const blob = await apiFetchBlob(`${path}/archivo`);
     const file = new File([blob], doc.fileName, { type: blob.type });
 
     return { doc, file };
@@ -145,17 +142,12 @@ export async function saveDocumentTemplate(
     detected_fonts: DetectedFontInfo[];
   },
 ): Promise<DocDetail> {
-  const res = await fetch(`${API_URL}/api/documentos/${encodeURIComponent(id)}`, {
+  const updated: DocDetail = await apiFetch(`/api/documentos/${encodeURIComponent(id)}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   });
 
-  if (!res.ok) {
-    throw new Error('Error al guardar los cambios en el servidor');
-  }
-
-  const updated: DocDetail = await res.json();
   docs = docs.map((d) => (d.id === updated.id ? updated : d));
   emit();
   return updated;
@@ -166,14 +158,12 @@ async function patchPublication(
   body: { published?: boolean; assigned_user_id?: number; clear_assigned_user?: boolean },
   errorMessage: string,
 ): Promise<void> {
-  const res = await fetch(`${API_URL}/api/documentos/${encodeURIComponent(id)}/publicar`, {
+  const updated: DocItem = await apiFetch(`/api/documentos/${encodeURIComponent(id)}/publicar`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
 
-  if (!res.ok) throw new Error(errorMessage);
-  const updated: DocItem = await res.json();
   docs = docs.map((d) => (d.id === updated.id ? updated : d));
   emit();
 }
@@ -216,7 +206,12 @@ export async function assignDocumentToUser(id: string, userId: number | null): P
 }
 
 export async function fetchPublicDocuments(): Promise<DocItem[]> {
-  const res = await fetch(`${API_URL}/api/documentos/publicos`);
-  if (!res.ok) throw new Error('Error al cargar la galería');
-  return res.json();
+  return apiFetch<DocItem[]>('/api/documentos/publicos');
 }
+
+export async function deleteDocument(id: number | string): Promise<void> {
+  await apiFetch<unknown>(`/api/documentos/${encodeURIComponent(String(id))}`, { method: 'DELETE' });
+  docs = docs.filter((doc) => doc.id !== String(id));
+  emit();
+}
+
