@@ -1,14 +1,20 @@
 export interface AdminResumen {
+  plantillas_base: number;
   documentos_generados: number;
+  documentos_completados: number;
   usuarios_activos: number;
+  reportes_total: number;
   reportes_pendientes: number;
+  reportes_resueltos: number;
+  semana: { documentos: number; reportes: number };
   actividades_recientes: AdminActividad[];
 }
 export interface AdminActividad {
   id: string;
   usuario: string;
   descripcion: string;
-  activo: boolean;
+  estado: string;
+  tono: 'green' | 'red' | 'gray';
   fecha: string;
 }
 export interface AdminUsuario {
@@ -31,4 +37,5 @@ export interface AdminConfiguracion {
   nombre: string;
   email: string;
   correo_soporte: string;
+  correo_recepcion_docs: string | null;
 }

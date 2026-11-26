@@ -33,11 +33,43 @@ class Documento(Base):
     valores_json = Column(Text, default="{}")
     enviado_en = Column(DateTime, nullable=True)  # fecha de envío completado
     revocado_en_origen = Column(Boolean, default=False)  # admin revocó, el usuario conserva su copia
+    acceso_solicitado = Column(Boolean, default=False, nullable=False)
+    acceso_solicitado_en = Column(DateTime, nullable=True)
+    completado = Column(Boolean, default=False, nullable=False)
+    fecha_completado = Column(DateTime, nullable=True)
     modified_at = Column(
         DateTime,
         default=lambda: datetime.now(timezone.utc),
         onupdate=lambda: datetime.now(timezone.utc),
     )
+
+
+class TicketAyuda(Base):
+    __tablename__ = "tickets_ayuda"
+    id = Column(Integer, primary_key=True, index=True)
+    usuario_id = Column(Integer, ForeignKey("usuarios.id"), nullable=False)
+    nombre_usuario = Column(String, nullable=False)
+    email_usuario = Column(String, nullable=False)
+    categoria = Column(String, nullable=False)
+    prioridad = Column(String, nullable=False)
+    documento_relacionado_id = Column(Integer, nullable=True)
+    asunto = Column(String, nullable=False)
+    descripcion = Column(Text, nullable=False)
+    captura_base64 = Column(Text, nullable=True)
+    estado = Column(String, default="abierto", nullable=False)
+    respuesta_admin = Column(Text, nullable=True)
+    fecha_creacion = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+    fecha_actualizacion = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc), nullable=False)
+
+
+class PasswordReset(Base):
+    __tablename__ = "password_resets"
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String, nullable=False, index=True)
+    usuario_id = Column(Integer, ForeignKey("usuarios.id"), nullable=False)
+    code_hash = Column(String, nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+    used = Column(Boolean, default=False, nullable=False)
 
 
 class Reporte(Base):
@@ -57,3 +89,4 @@ class ConfiguracionSistema(Base):
 
     id = Column(Integer, primary_key=True)
     correo_soporte = Column(String, nullable=False)
+    correo_recepcion_docs = Column(String, nullable=True)

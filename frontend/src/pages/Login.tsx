@@ -1,97 +1,22 @@
-//frontend\src\pages\Login.tsx
-import { useState } from 'react';
+﻿import { useState } from 'react';
 import type { FormEvent } from 'react';
-import { FileText } from 'lucide-react';
+import { FileText, Eye, EyeOff, ArrowLeft } from 'lucide-react';
 import axios from 'axios';
+import { apiFetch } from '../utils/api';
+interface LoginResponse { access_token: string; usuario: { rol: string; [key: string]: unknown } }
 export default function Login() {
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [error, setError] = useState<string | null>(null);
-  const [cargando, setCargando] = useState(false);
-
-  const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
-
-  const handleSubmit = async (e: FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    setError(null);
-    setCargando(true);
-
-    try {
-      const response = await axios.post(`${API_URL}/api/auth/login`, {
-        email,
-        password,
-      });
-
-      const { access_token, usuario } = response.data;
-
-      // Guardar sesión en localStorage
-      localStorage.setItem('token', access_token);
-      localStorage.setItem('usuario', JSON.stringify(usuario));
-
-      // Redirigir según el rol devuelto por SQLite/FastAPI
-      if (usuario.rol === 'admin') {
-        window.location.assign('/resumen');
-      } else {
-        window.location.assign('/inicio');
-      }
-    } catch (err: any) {
-      if (err.response?.data?.detail) {
-        setError(err.response.data.detail);
-      } else {
-        setError('No se pudo conectar con el servidor. Verifica que el backend esté activo.');
-      }
-    } finally {
-      setCargando(false);
-    }
-  };
-
-  return (
-    <div className="relative flex min-h-screen w-full flex-row bg-bg-light">
-      {/* Panel izquierdo (azul) */}
-      <div className="flex flex-1 flex-col justify-center gap-[30px] bg-primary p-10 text-white">
-        <h2 className="text-[22px] font-semibold leading-[1.4]">
-          "Deja de rellenar plantillas, construye tu contrato contigo mismo"
-        </h2>
-        <FileText className="h-[60px] w-[60px]" strokeWidth={2} />
-      </div>
-
-      {/* Panel derecho (formulario) */}
-      <div className="flex flex-1 items-center justify-center p-10">
-        <form
-          onSubmit={handleSubmit}
-          className="flex w-full max-w-[300px] flex-col gap-5"
-        >
-          {error && (
-            <div className="rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-xs font-medium text-brand-red">
-              {error}
-            </div>
-          )}
-
-          <input
-            type="email"
-            placeholder="Correo Electronico"
-            required
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            className="rounded-lg border border-[#ddd] bg-[#f9f9f9] px-[15px] py-3 text-sm outline-none focus:border-primary"
-          />
-          <input
-            type="password"
-            placeholder="Contraseña"
-            required
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            className="rounded-lg border border-[#ddd] bg-[#f9f9f9] px-[15px] py-3 text-sm outline-none focus:border-primary"
-          />
-          <button
-            type="submit"
-            disabled={cargando}
-            className="block cursor-pointer rounded-[20px] border-none bg-primary p-3 text-center font-semibold text-white transition-colors duration-200 hover:bg-primary-dark disabled:opacity-60"
-          >
-            {cargando ? 'Verificando...' : 'Iniciar sesión'}
-          </button>
-        </form>
-      </div>
-    </div>
-  );
+  const [email,setEmail]=useState(''); const [password,setPassword]=useState(''); const [error,setError]=useState<string|null>(null); const [cargando,setCargando]=useState(false);
+  const [step,setStep]=useState<0|1|2|3>(0); const [code,setCode]=useState('');const [newPassword,setNewPassword]=useState('');const [confirmPassword,setConfirmPassword]=useState('');const [showPassword,setShowPassword]=useState(false);const [busy,setBusy]=useState(false);
+  const API_URL=import.meta.env.VITE_API_URL||'http://localhost:8000';
+  const handleSubmit=async(e:FormEvent<HTMLFormElement>)=>{e.preventDefault();setError(null);setCargando(true);try{const {data}=await axios.post<LoginResponse>(`${API_URL}/api/auth/login`,{email,password});localStorage.setItem('token',data.access_token);localStorage.setItem('usuario',JSON.stringify(data.usuario));window.location.assign(data.usuario.rol==='admin'?'/resumen':'/inicio');}catch(err:unknown){if(axios.isAxiosError<{detail?:string}>(err))setError(err.response?.data?.detail||'No se pudo conectar con el servidor. Verifica que el backend esté activo.');else setError('No se pudo iniciar sesión.');}finally{setCargando(false);}};
+  async function requestCode(e:FormEvent<HTMLFormElement>){e.preventDefault();setError(null);setBusy(true);try{await apiFetch<{message:string}>('/api/auth/forgot-password',{method:'POST',body:JSON.stringify({email})});setStep(2);}catch(e){setError((e as Error).message);}finally{setBusy(false);}}
+  async function reset(e:FormEvent<HTMLFormElement>){e.preventDefault();setError(null);if(newPassword.length<6){setError('La contraseña debe tener al menos 6 caracteres.');return;}if(newPassword!==confirmPassword){setError('Las contraseñas no coinciden.');return;}setBusy(true);try{const verified=await apiFetch<{valid:boolean;message:string}>('/api/auth/verify-reset-code',{method:'POST',body:JSON.stringify({email,code})});if(!verified.valid)throw new Error(verified.message||'El código no es válido.');await apiFetch<{message:string}>('/api/auth/reset-password',{method:'POST',body:JSON.stringify({email,code,new_password:newPassword})});setStep(3);}catch(e){setError((e as Error).message);}finally{setBusy(false);}}
+  return <div className="relative flex min-h-screen w-full flex-col overflow-x-hidden bg-bg-light md:flex-row"><div className="flex flex-1 flex-col justify-center gap-[30px] bg-primary p-10 text-white"><h2 className="max-w-[420px] text-[22px] font-semibold leading-[1.4]">"Deja de rellenar plantillas, construye tu contrato contigo mismo"</h2><FileText className="h-[60px] w-[60px] opacity-90" strokeWidth={2}/></div><div className="flex flex-1 items-center justify-center p-6"><div className="w-full max-w-[340px]">
+  {step===0&&<form onSubmit={handleSubmit} className="flex flex-col gap-5">{error&&<p role="alert" className="rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-xs text-brand-red">{error}</p>}<input type="email" placeholder="Correo electrónico" required value={email} onChange={e=>setEmail(e.target.value)} className="rounded-lg border border-[#ddd] bg-[#f9f9f9] px-[15px] py-3 text-sm outline-none focus:border-primary"/><div><input type="password" placeholder="Contraseña" required value={password} onChange={e=>setPassword(e.target.value)} className="w-full rounded-lg border border-[#ddd] bg-[#f9f9f9] px-[15px] py-3 text-sm outline-none focus:border-primary"/><button type="button" onClick={()=>{setStep(1);setError(null);}} className="mt-2 text-xs font-semibold text-primary hover:underline">¿Olvidaste tu contraseña?</button></div><button type="submit" disabled={cargando} className="rounded-[20px] bg-primary p-3 text-center font-semibold text-white hover:bg-primary-dark disabled:opacity-60">{cargando?'Verificando…':'Iniciar sesión'}</button></form>}
+  {step===1&&<form onSubmit={requestCode} className="space-y-4"><button type="button" onClick={()=>{setStep(0);setError(null);}} className="flex items-center gap-1 text-sm text-primary"><ArrowLeft size={16}/>Volver al inicio de sesión</button><h1 className="text-xl font-bold">Recuperar contraseña</h1><p className="text-sm text-muted">Te enviaremos un código de 6 dígitos a tu correo.</p><input required type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="Correo electrónico" className="w-full rounded-lg border border-[#ddd] bg-white px-4 py-3 text-sm"/>{error&&<p role="alert" className="text-sm text-brand-red">{error}</p>}<button disabled={busy} className="w-full rounded-[20px] bg-primary p-3 font-semibold text-white disabled:opacity-60">{busy?'Enviando…':'Enviar código'}</button></form>}
+  {step===2&&<form onSubmit={reset} className="space-y-4"><h1 className="text-xl font-bold">Crea una nueva contraseña</h1><p className="text-sm text-muted">Ingresa el código enviado a {email}.</p><input required inputMode="numeric" pattern="[0-9]{6}" maxLength={6} value={code} onChange={e=>setCode(e.target.value.replace(/\D/g,'').slice(0,6))} placeholder="Código de 6 dígitos" className="w-full rounded-lg border border-[#ddd] bg-white px-4 py-3 text-sm"/><div className="relative"><input required minLength={6} type={showPassword?'text':'password'} value={newPassword} onChange={e=>setNewPassword(e.target.value)} placeholder="Nueva contraseña (mín. 6)" className="w-full rounded-lg border border-[#ddd] bg-white px-4 py-3 pr-12 text-sm"/><button type="button" aria-label="Mostrar u ocultar contraseña" onClick={()=>setShowPassword(v=>!v)} className="absolute right-3 top-3 text-muted">{showPassword?<EyeOff size={18}/>:<Eye size={18}/>}</button></div><input required minLength={6} type={showPassword?'text':'password'} value={confirmPassword} onChange={e=>setConfirmPassword(e.target.value)} placeholder="Confirma la contraseña" className="w-full rounded-lg border border-[#ddd] bg-white px-4 py-3 text-sm"/>{error&&<p role="alert" className="text-sm text-brand-red">{error}</p>}<button disabled={busy} className="w-full rounded-[20px] bg-primary p-3 font-semibold text-white disabled:opacity-60">{busy?'Guardando…':'Cambiar contraseña'}</button></form>}
+  {step===3&&<div className="space-y-4 text-center"><h1 className="text-xl font-bold">Contraseña actualizada</h1><p className="text-sm text-muted">Ya puedes iniciar sesión con tu nueva contraseña.</p><button onClick={()=>{setStep(0);setPassword('');setCode('');setNewPassword('');setConfirmPassword('');}} className="w-full rounded-[20px] bg-primary p-3 font-semibold text-white">Volver al inicio de sesión</button></div>}
+  </div></div></div>;
 }
+
+

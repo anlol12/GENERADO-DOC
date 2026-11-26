@@ -1,56 +1,46 @@
+﻿import { useEffect, useMemo, useState } from 'react';
+import type { ChangeEvent, FormEvent } from 'react';
+import { Search, Upload, Send, MessageCircle } from 'lucide-react';
 import TopHeader from '../components/TopHeader';
 import FaqItem from '../components/FaqItem';
+import { apiFetch } from '../utils/api';
 
+type Categoria = 'error_documento' | 'problema_firma' | 'acceso_cuenta' | 'solicitud_plantilla' | 'sugerencia' | 'otro';
+type Prioridad = 'baja' | 'media' | 'alta' | 'urgente';
+type Estado = 'abierto' | 'en_revision' | 'resuelto' | 'cerrado';
+interface Ticket { id: number; usuario_id: number; nombre_usuario: string; email_usuario: string; categoria: Categoria; prioridad: Prioridad; documento_relacionado_id: number | null; asunto: string; descripcion: string; captura_base64: string | null; estado: Estado; respuesta_admin: string | null; fecha_creacion: string; fecha_actualizacion: string }
+interface UserDocument { id: number | string; name?: string; nombre?: string; titulo?: string }
+interface Usuario { id: number; nombre_completo?: string; nombre?: string; email: string; rol?: string }
+const estadoLabel: Record<Estado, string> = { abierto: 'Abierto', en_revision: 'En revisión', resuelto: 'Resuelto', cerrado: 'Cerrado' };
+const categories: Array<[Categoria, string]> = [['error_documento','Error en un documento'],['problema_firma','Problema con la firma'],['acceso_cuenta','Acceso a mi cuenta'],['solicitud_plantilla','Solicitar una plantilla'],['sugerencia','Sugerencia'],['otro','Otro']];
+const faqs = [
+  ['¿Cómo completo los campos de un documento?', 'Abre Mis documentos, selecciona una plantilla y completa cada campo. Tus cambios se guardan automáticamente. Al terminar, elige “Terminé el documento” para revisarlo y enviarlo.'],
+  ['¿Cómo dibujo o subo mi firma?', 'En el campo de firma puedes dibujarla con el cursor o el dedo, o subir una imagen desde tu dispositivo. Puedes limpiar la firma y volver a intentarlo antes de enviar.'],
+  ['¿Qué hago si no llega el correo?', 'Revisa la carpeta de spam y confirma que tu correo esté escrito correctamente. Si no aparece después de unos minutos, crea un reporte desde esta página.'],
+  ['¿Qué formatos de documento se admiten?', 'Puedes completar documentos PDF y DOCX. Para una firma subida, usa una imagen PNG o JPG.'],
+];
 export default function Ayuda() {
-  return (
-    <div className="relative flex min-h-screen w-full flex-col bg-bg-light">
-      <TopHeader active="ayuda" showUser />
-
-      <main className="flex flex-1 flex-col items-center p-10">
-        <h2 className="mb-5 w-full text-center text-[26px] font-bold">¿En que te ayudamos?</h2>
-
-        <input
-          type="text"
-          placeholder='Busca por palabra clave ejemplo: "descargar contrato"'
-          className="mb-[30px] w-full rounded-[25px] border-none bg-card px-5 py-[15px] text-center text-sm outline-none"
-        />
-
-        <section className="mt-5 w-full max-w-[800px]">
-          <h3 className="mb-[15px] text-sm font-semibold text-main">Preguntas frecuentes</h3>
-
-          <FaqItem question="¿Cómo descargo un contrato ya completado?">
-            Mientras respondes a la entrevista, cada cláusula se marca en rojo, ámbar o verde según qué tan avanzada que la revises antes de firmar. El rojo no significa que la cláusula sea inválida, solo que puede generar una obligación importante, como una penalización o un plazo corto.
-          </FaqItem>
-
-          <FaqItem question="¿Cómo cambio mi contraseña?">
-            Puedes cambiar tu contraseña en cualquier momento desde tu cuenta:
-            <br />
-            1. Entra a "Ayuda" y "Cuenta y contraseña", o directamente desde tu perfil (icono de tu cuenta arriba a la derecha).
-            <br />
-            2. Ingresa tu contraseña actual.
-            <br />
-            3. Guarda los cambios.
-          </FaqItem>
-
-          <FaqItem question="¿Cómo cambio mi contraseña?">
-            Ve a Configuración &gt; Cuenta y sigue los pasos indicados.
-          </FaqItem>
-        </section>
-
-        <div className="mt-10 flex w-full max-w-[800px] items-center justify-between border-t border-[#ddd] pt-5">
-          <p className="text-xs text-[#555]">
-            <strong className="text-primary">¿No encontraste lo que buscabas?</strong>
-            <br />
-            Repórtanos el problema y te ayudamos directamente.
-          </p>
-          <button
-            type="button"
-            className="cursor-pointer rounded-[20px] bg-primary px-[25px] py-2.5 text-xs font-semibold text-white transition-colors duration-200 hover:bg-primary-dark"
-          >
-            Reporte de problema
-          </button>
-        </div>
-      </main>
-    </div>
-  );
+  const usuario = JSON.parse(localStorage.getItem('usuario') || 'null') as Usuario | null;
+  const [query, setQuery] = useState(''); const [tab, setTab] = useState<'faq'|'form'|'tickets'>(() => {
+    const t = new URLSearchParams(window.location.search).get('tab');
+    return t === 'tickets' || t === 'form' ? t : 'faq';
+  });
+  const [documents, setDocuments] = useState<UserDocument[]>([]); const [tickets, setTickets] = useState<Ticket[]>([]);
+  const [categoria, setCategoria] = useState<Categoria>('otro'); const [prioridad, setPrioridad] = useState<Prioridad>('media');
+  const [docId, setDocId] = useState(''); const [asunto, setAsunto] = useState(''); const [descripcion, setDescripcion] = useState('');
+  const [captura, setCaptura] = useState<string | null>(null); const [error, setError] = useState(''); const [success, setSuccess] = useState(''); const [busy, setBusy] = useState(false);
+  const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+  const filteredFaqs = useMemo(() => faqs.filter(([q,a]) => `${q} ${a}`.toLowerCase().includes(query.toLowerCase())), [query]);
+  async function loadTickets() { if (usuario?.id) { try { setTickets(await apiFetch<Ticket[]>(`/api/ayuda/tickets/usuario/${usuario.id}`)); } catch (e) { setError((e as Error).message); } } }
+  useEffect(() => { if (!usuario?.id) return; void fetch(`${API_URL}/api/usuario/${usuario.id}/documentos`).then(r=>r.ok?r.json():[]).then((data: UserDocument[])=>setDocuments(data)); void loadTickets(); }, [API_URL, usuario?.id]);
+  function upload(e: ChangeEvent<HTMLInputElement>) { const file=e.target.files?.[0]; if (!file) return; if (!file.type.startsWith('image/')) { setError('Adjunta un archivo de imagen.'); return; } const reader=new FileReader(); reader.onload=()=>setCaptura(typeof reader.result==='string'?reader.result:null); reader.readAsDataURL(file); }
+  async function submit(e: FormEvent<HTMLFormElement>) { e.preventDefault(); if (!usuario?.id) return; setError(''); setSuccess(''); setBusy(true); try { await apiFetch<Ticket>('/api/ayuda/tickets',{method:'POST',body:JSON.stringify({usuario_id:usuario.id,categoria,prioridad,documento_relacionado_id:docId?Number(docId):undefined,asunto,descripcion,captura_base64:captura||undefined})}); setSuccess('Tu reporte se envió correctamente.'); setAsunto('');setDescripcion('');setCaptura(null); await loadTickets();setTab('tickets'); } catch(e) {setError((e as Error).message);} finally {setBusy(false);} }
+  return <div className="relative flex min-h-screen w-full flex-col overflow-x-hidden bg-bg-light"><TopHeader active="ayuda" showUser/><main className="mx-auto w-full max-w-[900px] flex-1 p-6 md:p-10"><h1 className="mb-5 text-center text-[26px] font-bold">¿En qué te ayudamos?</h1><label className="mb-6 flex items-center gap-3 rounded-[25px] bg-card px-5 py-[15px]"><Search className="h-4 w-4 text-muted"/><input aria-label="Buscar preguntas frecuentes" value={query} onChange={e=>setQuery(e.target.value)} placeholder="Busca por palabra clave: firma, documento, correo…" className="w-full bg-transparent text-sm outline-none"/></label>
+    <nav className="mb-5 flex flex-wrap gap-2">{([['faq','Preguntas frecuentes'],['form','Crear reporte'],['tickets','Mis reportes / Tickets']] as const).map(([key,label])=><button key={key} onClick={()=>setTab(key)} className={`rounded-[20px] px-4 py-2 text-xs font-semibold ${tab===key?'bg-primary text-white':'bg-white text-main'}`}>{label}</button>)}</nav>
+    {error&&<p role="alert" className="mb-3 text-sm text-brand-red">{error}</p>}{success&&<p role="status" className="mb-3 text-sm text-green-700">{success}</p>}
+    {tab==='faq'&&<section className="rounded-[15px] bg-white p-5"><h2 className="mb-3 text-sm font-semibold text-main">Preguntas frecuentes</h2>{filteredFaqs.map(([q,a])=><FaqItem key={q} question={q}>{a}</FaqItem>)}{!filteredFaqs.length&&<p className="py-4 text-sm text-muted">No encontramos resultados.</p>}</section>}
+    {tab==='form'&&<form onSubmit={submit} className="space-y-4 rounded-[15px] bg-white p-5"><h2 className="text-lg font-bold">Cuéntanos qué ocurrió</h2><div className="grid gap-4 sm:grid-cols-2"><label className="text-xs font-semibold text-muted">Categoría<select value={categoria} onChange={e=>setCategoria(e.target.value as Categoria)} className="mt-1 w-full rounded-[10px] bg-bg-light p-3 text-main">{categories.map(([v,l])=><option key={v} value={v}>{l}</option>)}</select></label><label className="text-xs font-semibold text-muted">Prioridad<select value={prioridad} onChange={e=>setPrioridad(e.target.value as Prioridad)} className="mt-1 w-full rounded-[10px] bg-bg-light p-3 text-main">{(['baja','media','alta','urgente'] as const).map(v=><option key={v} value={v}>{v[0].toUpperCase()+v.slice(1)}</option>)}</select></label></div><label className="block text-xs font-semibold text-muted">Documento relacionado<select value={docId} onChange={e=>setDocId(e.target.value)} className="mt-1 w-full rounded-[10px] bg-bg-light p-3 text-main"><option value="">Ninguno</option>{documents.map(d=><option key={d.id} value={d.id}>{d.name||d.nombre||d.titulo||`Documento ${d.id}`}</option>)}</select></label><label className="block text-xs font-semibold text-muted">Asunto<input required maxLength={160} value={asunto} onChange={e=>setAsunto(e.target.value)} className="mt-1 w-full rounded-[10px] bg-bg-light p-3 text-sm text-main"/></label><label className="block text-xs font-semibold text-muted">Descripción<textarea required rows={5} value={descripcion} onChange={e=>setDescripcion(e.target.value)} className="mt-1 w-full rounded-[10px] bg-bg-light p-3 text-sm text-main"/></label><label className="inline-flex cursor-pointer items-center gap-2 rounded-[10px] bg-bg-light px-4 py-3 text-xs font-semibold text-main"><Upload className="h-4 w-4"/> {captura?'Imagen adjunta':'Adjuntar imagen'}<input type="file" accept="image/*" onChange={upload} className="hidden"/></label>{captura&&<img src={captura} alt="Vista previa adjunta" className="max-h-40 rounded-lg"/>}<button disabled={busy} className="flex items-center gap-2 rounded-[20px] bg-primary px-5 py-3 text-sm font-semibold text-white disabled:opacity-60"><Send className="h-4 w-4"/>{busy?'Enviando…':'Enviar reporte'}</button></form>}
+    {tab==='tickets'&&<section className="space-y-3">{tickets.length===0?<p className="rounded-[15px] bg-white p-6 text-sm text-muted">Todavía no tienes reportes.</p>:tickets.map(t=><article key={t.id} className="rounded-[15px] bg-white p-5"><div className="flex flex-wrap items-center justify-between gap-2"><h3 className="font-semibold">{t.asunto}</h3><span className="rounded-full bg-primary/10 px-3 py-1 text-xs font-semibold text-primary">{estadoLabel[t.estado]}</span></div><p className="mt-2 whitespace-pre-wrap text-sm text-muted">{t.descripcion}</p><time className="mt-2 block text-xs text-muted">{new Date(t.fecha_creacion).toLocaleString('es')}</time>{t.respuesta_admin&&<div className="mt-4 flex gap-2 rounded-[10px] bg-bg-light p-3 text-sm"><MessageCircle className="h-4 w-4 shrink-0 text-primary"/><p><strong>Respuesta del equipo:</strong><br/>{t.respuesta_admin}</p></div>}</article>)}</section>}
+    </main></div>;
 }
+

@@ -77,3 +77,6 @@ desktop.ini
 *.njsproj
 *.sln
 *.sw?
+
+# ── Instalador local (se distribuye aparte) ──────
+instalador/

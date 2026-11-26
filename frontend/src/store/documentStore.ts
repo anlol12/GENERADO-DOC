@@ -89,23 +89,13 @@ export async function fetchDocuments(): Promise<DocItem[]> {
 }
 
 export async function fetchUsuarios(): Promise<UsuarioOption[]> {
-  const token = localStorage.getItem('token');
-  const res = await fetch(`${API_URL}/api/admin/usuarios`, {
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
-  });
-  if (res.status === 401) {
-    localStorage.removeItem('token');
-    localStorage.removeItem('usuario');
-    window.location.replace('/login');
-  }
-  if (!res.ok) throw new Error('Error al obtener usuarios');
-  return res.json();
+  return apiFetch<UsuarioOption[]>('/api/admin/usuarios');
 }
 
 export async function addDocument(file: File, name: string): Promise<DocDetail> {
   const formData = new FormData();
   formData.append('file', file);
-  formData.append('name', name.trim() || nextDocumentName());
+  formData.append('name', name.trim() || file.name.replace(/\.[^.]+$/, '').trim() || nextDocumentName());
 
   const created: DocDetail = await apiFetch('/api/documentos', {
     method: 'POST',
@@ -156,7 +146,6 @@ export async function saveDocumentTemplate(
 async function patchPublication(
   id: string,
   body: { published?: boolean; assigned_user_id?: number; clear_assigned_user?: boolean },
-  errorMessage: string,
 ): Promise<void> {
   const updated: DocItem = await apiFetch(`/api/documentos/${encodeURIComponent(id)}/publicar`, {
     method: 'PATCH',
@@ -170,23 +159,15 @@ async function patchPublication(
 
 /** Publica en la galería general (Inicio) y libera cualquier asignación privada. */
 export function publishDocument(id: string): Promise<void> {
-  return patchPublication(
-    id,
-    { published: true, clear_assigned_user: true },
-    'No se pudo publicar el documento',
-  );
+  return patchPublication(id, { published: true, clear_assigned_user: true });
 }
 
 export function unpublishDocument(id: string): Promise<void> {
-  return patchPublication(id, { published: false }, 'No se pudo quitar la publicación');
+  return patchPublication(id, { published: false });
 }
 
 export function revokeUserAssignment(id: string): Promise<void> {
-  return patchPublication(
-    id,
-    { clear_assigned_user: true },
-    'No se pudo revocar la asignación del usuario',
-  );
+  return patchPublication(id, { clear_assigned_user: true });
 }
 
 export async function togglePublish(id: string): Promise<void> {
@@ -198,11 +179,7 @@ export async function togglePublish(id: string): Promise<void> {
 /** Asigna solo a ese usuario (sale de la galería general); null revoca la asignación. */
 export async function assignDocumentToUser(id: string, userId: number | null): Promise<void> {
   if (userId === null) return revokeUserAssignment(id);
-  return patchPublication(
-    id,
-    { assigned_user_id: userId, published: false },
-    'No se pudo asignar el documento al usuario',
-  );
+  return patchPublication(id, { assigned_user_id: userId, published: false });
 }
 
 export async function fetchPublicDocuments(): Promise<DocItem[]> {
@@ -215,3 +192,24 @@ export async function deleteDocument(id: number | string): Promise<void> {
   emit();
 }
 
+
+
+export interface AccessRequest {
+  doc_id: number;
+  template_id: number | null;
+  doc_name: string;
+  usuario_id: number | null;
+  usuario_nombre: string;
+  usuario_email: string;
+  solicitado_en: string;
+}
+
+export function fetchAccessRequests(): Promise<AccessRequest[]> {
+  return apiFetch<AccessRequest[]>('/api/admin/solicitudes-acceso');
+}
+
+export function resolveAccessRequest(docId: number, aprobar: boolean): Promise<unknown> {
+  return apiFetch(`/api/admin/solicitudes-acceso/${encodeURIComponent(String(docId))}/resolver`, {
+    method: 'PATCH', body: JSON.stringify({ aprobar }),
+  });
+}

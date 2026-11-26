@@ -72,15 +72,15 @@ export default function Inicio() {
   const suggestions = query.trim() ? filtered.slice(0, 6) : [];
 
   return (
-    <div className="relative flex min-h-screen w-full flex-col bg-bg-light">
+    <div className="relative flex min-h-screen w-full flex-col overflow-x-hidden bg-bg-light">
       <TopHeader active="inicio" />
 
-      <main className="flex flex-1 flex-col items-center p-10">
-        <div className="mb-8 flex w-full items-center justify-between rounded-[15px] bg-primary px-[30px] py-5 text-white shadow-[0_4px_10px_rgba(75,59,255,0.3)]">
+      <main className="flex flex-1 flex-col items-center p-4 md:p-6 lg:p-10">
+        <div className="mb-8 flex w-full flex-wrap items-center justify-between gap-3 rounded-[15px] bg-primary px-4 py-5 md:px-[30px] text-white shadow-[0_4px_10px_rgba(75,59,255,0.3)]">
           <h1 className="text-[22px] font-semibold">
             Tu contrato, hecho a tu medida, cláusula por cláusula
           </h1>
-          <FileText className="h-10 w-10 fill-none stroke-white" strokeWidth={2} />
+          <FileText className="h-10 w-10 shrink-0 fill-none stroke-white" strokeWidth={2} />
         </div>
 
         {/* BUSCADOR CON AUTOCOMPLETADO */}

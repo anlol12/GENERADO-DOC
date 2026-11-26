@@ -1,11 +1,12 @@
 interface ActivityItemProps {
   name: string;
-  status: 'green' | 'red';
+  status: 'green' | 'red' | 'gray';
 }
 
 const dotColor = {
   green: 'bg-[#2ecc71]',
   red: 'bg-[#e74c3c]',
+  gray: 'bg-gray-400',
 };
 
 export default function ActivityItem({ name, status }: ActivityItemProps) {

@@ -1,9 +1,14 @@
 import os
+import re
 import base64
 import json
 import fitz  # PyMuPDF
 import uuid
 import shutil
+import secrets
+import hashlib
+import hmac
+from datetime import timedelta
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -16,8 +21,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.orm import Session
 
 from database import engine, Base, get_db, SessionLocal
-from models import Usuario, Documento, Reporte, ConfiguracionSistema
+from models import Usuario, Documento, Reporte, ConfiguracionSistema, TicketAyuda, PasswordReset
 from security import SECRET_KEY, hash_password, verify_password, create_access_token
+from email_service import EmailService
 import jwt
 
 class Settings(BaseSettings):
@@ -38,6 +44,7 @@ os.makedirs(PLANTILLAS_DIR, exist_ok=True)
 os.makedirs(GENERADOS_DIR, exist_ok=True)
 
 Base.metadata.create_all(bind=engine)
+email_service = EmailService()
 
 
 def _migrar_columnas_documentos():
@@ -50,6 +57,10 @@ def _migrar_columnas_documentos():
         "valores_json": "TEXT DEFAULT '{}'",
         "enviado_en": "DATETIME",
         "revocado_en_origen": "BOOLEAN DEFAULT 0",
+        "completado": "BOOLEAN DEFAULT 0",
+        "fecha_completado": "DATETIME",
+        "acceso_solicitado": "BOOLEAN DEFAULT 0 NOT NULL",
+        "acceso_solicitado_en": "DATETIME",
     }
     with engine.begin() as conn:
         for nombre, ddl in nuevas.items():
@@ -58,6 +69,17 @@ def _migrar_columnas_documentos():
 
 
 _migrar_columnas_documentos()
+
+
+def _migrar_configuracion_sistema():
+    from sqlalchemy import inspect, text
+    existentes = {c["name"] for c in inspect(engine).get_columns("configuracion_sistema")}
+    if "correo_recepcion_docs" not in existentes:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE configuracion_sistema ADD COLUMN correo_recepcion_docs VARCHAR"))
+
+
+_migrar_configuracion_sistema()
 
 app = FastAPI(title=settings.APP_NAME)
 
@@ -72,6 +94,31 @@ app.add_middleware(
 
 
 # -------------------- ESQUEMAS --------------------
+class ForgotPasswordRequest(BaseModel):
+    email: str
+
+class VerifyResetCodeRequest(BaseModel):
+    email: str
+    code: str
+
+class ResetPasswordRequest(BaseModel):
+    email: str
+    code: str
+    new_password: str
+
+class CrearTicketRequest(BaseModel):
+    usuario_id: int
+    categoria: str
+    prioridad: str
+    documento_relacionado_id: Optional[int] = None
+    asunto: str
+    descripcion: str
+    captura_base64: Optional[str] = None
+
+class ActualizarTicketRequest(BaseModel):
+    estado: Optional[str] = None
+    respuesta_admin: Optional[str] = None
+
 class LoginRequest(BaseModel):
     email: str
     password: str
@@ -115,6 +162,7 @@ class ActualizarConfiguracionRequest(BaseModel):
     nombre: Optional[str] = None
     email: Optional[str] = None
     correo_soporte: Optional[str] = None
+    correo_recepcion_docs: Optional[str] = None
     password_actual: Optional[str] = None
     password_nueva: Optional[str] = None
 
@@ -197,6 +245,52 @@ def crear_usuarios_por_defecto():
 
 
 # -------------------- AUTH & USUARIOS --------------------
+@app.post("/api/auth/forgot-password")
+def forgot_password(payload: ForgotPasswordRequest, db: Session = Depends(get_db)):
+    usuario = db.query(Usuario).filter(Usuario.email == payload.email.strip().lower()).first()
+    if usuario and usuario.activo:
+        code = f"{secrets.randbelow(1000000):06d}"
+        now = datetime.now(timezone.utc)
+        db.query(PasswordReset).filter(PasswordReset.usuario_id == usuario.id, PasswordReset.used == False).update({"used": True})
+        db.add(PasswordReset(email=usuario.email, usuario_id=usuario.id, code_hash=hashlib.sha256(code.encode()).hexdigest(), expires_at=now + timedelta(minutes=15), used=False))
+        db.commit()
+        email_service.send_email(usuario.email, "Recuperación de contraseña", f"<html><body><h2>Recuperación de contraseña</h2><p>Tu código es <strong>{code}</strong>.</p><p>Vence en 15 minutos. Si no solicitaste este cambio, ignora este correo.</p></body></html>")
+    return {"message": "Si el correo está registrado, recibirás instrucciones para recuperar tu contraseña."}
+
+
+def _reset_valido(email: str, code: str, db: Session):
+    usuario = db.query(Usuario).filter(Usuario.email == email.strip().lower(), Usuario.activo == True).first()
+    if not usuario:
+        return None
+    ahora = datetime.now(timezone.utc)
+    candidate = hashlib.sha256(code.encode()).hexdigest()
+    rows = db.query(PasswordReset).filter(PasswordReset.usuario_id == usuario.id, PasswordReset.used == False).order_by(PasswordReset.id.desc()).all()
+    for row in rows:
+        expiry = row.expires_at.replace(tzinfo=timezone.utc) if row.expires_at.tzinfo is None else row.expires_at
+        if expiry > ahora and hmac.compare_digest(row.code_hash, candidate):
+            return row
+    return None
+
+@app.post("/api/auth/verify-reset-code")
+def verify_reset_code(payload: VerifyResetCodeRequest, db: Session = Depends(get_db)):
+    valid = _reset_valido(payload.email, payload.code, db) is not None
+    return {"valid": valid, "message": "Código válido." if valid else "El código es inválido o ha vencido."}
+
+@app.post("/api/auth/reset-password")
+def reset_password(payload: ResetPasswordRequest, db: Session = Depends(get_db)):
+    if len(payload.new_password) < 6:
+        raise HTTPException(status_code=400, detail="La contraseña debe tener al menos 6 caracteres.")
+    reset = _reset_valido(payload.email, payload.code, db)
+    if not reset:
+        raise HTTPException(status_code=400, detail="El código es inválido o ha vencido.")
+    usuario = db.query(Usuario).filter(Usuario.id == reset.usuario_id).first()
+    usuario.password_hash = hash_password(payload.new_password)
+    reset.used = True
+    db.query(PasswordReset).filter(PasswordReset.usuario_id == usuario.id, PasswordReset.used == False).update({"used": True})
+    db.commit()
+    email_service.send_email(usuario.email, "Contraseña actualizada", "<html><body><h2>Contraseña actualizada</h2><p>La contraseña de tu cuenta fue cambiada correctamente.</p></body></html>")
+    return {"message": "La contraseña se actualizó correctamente."}
+
 @app.post("/api/auth/login")
 def login(payload: LoginRequest, db: Session = Depends(get_db)):
     usuario = db.query(Usuario).filter(Usuario.email == payload.email).first()
@@ -259,7 +353,6 @@ def listar_usuarios(db: Session = Depends(get_db), admin: Usuario = Depends(admi
         for u in usuarios
     ]
 
-
 @app.post("/api/admin/usuarios", status_code=status.HTTP_201_CREATED)
 def crear_usuario_admin(payload: CrearUsuarioRequest, db: Session = Depends(get_db), admin: Usuario = Depends(administrador_actual)):
     nombre, email = payload.nombre_completo.strip(), payload.email.strip()
@@ -286,22 +379,53 @@ def actualizar_usuario_admin(user_id: int, payload: ActualizarUsuarioRequest, db
     return _usuario_json(usuario)
 
 
+def _utc(f):
+    f = f or datetime.now(timezone.utc)
+    return f.replace(tzinfo=timezone.utc) if f.tzinfo is None else f
+
+
 @app.get("/api/admin/resumen")
 def resumen_admin(db: Session = Depends(get_db), admin: Usuario = Depends(administrador_actual)):
+    desde = datetime.now(timezone.utc) - timedelta(days=7)
+    desde_naive = desde.replace(tzinfo=None)  # SQLite guarda datetimes sin zona
+    plantillas = db.query(Documento).filter(Documento.template_id.is_(None))
+    copias = db.query(Documento).filter(Documento.template_id.isnot(None))
+    usuarios = {u.id: u for u in db.query(Usuario).all()}
     actividades = []
-    for d in db.query(Documento).order_by(Documento.modified_at.desc()).all():
-        u = db.query(Usuario).filter(Usuario.id == d.assigned_user_id).first() if d.assigned_user_id else None
-        f = d.modified_at or datetime.now(timezone.utc)
-        if f.tzinfo is None: f = f.replace(tzinfo=timezone.utc)
-        actividades.append({"id": str(d.id), "usuario": u.nombre_completo if u else "Sistema", "descripcion": f"Modificó el documento {d.name}", "activo": bool(u.activo) if u else False, "fecha": f.isoformat()})
-    for r in db.query(Reporte).all():
-        u = db.query(Usuario).filter(Usuario.id == r.usuario_id).first() if r.usuario_id else None
-        f = r.created_at or datetime.now(timezone.utc)
-        if f.tzinfo is None: f = f.replace(tzinfo=timezone.utc)
-        actividades.append({"id": f"reporte-{r.id}", "usuario": u.nombre_completo if u else (r.usuario_nombre or "Sistema"), "descripcion": f"Envió el reporte {r.titulo}", "activo": bool(u.activo) if u else False, "fecha": f.isoformat()})
+    for d in plantillas.order_by(Documento.modified_at.desc()).limit(20).all():
+        actividades.append({"id": f"plantilla-{d.id}", "usuario": admin.nombre_completo or "Administrador", "descripcion": f"Editó la plantilla {d.name}",
+                            "estado": "Publicado" if d.published else "Borrador", "tono": "green" if d.published else "gray", "fecha": _utc(d.modified_at).isoformat()})
+    for d in copias.order_by(Documento.modified_at.desc()).limit(20).all():
+        u = usuarios.get(d.assigned_user_id)
+        hecho = bool(d.completado or d.enviado_en)
+        fecha = d.fecha_completado or d.enviado_en if hecho else d.modified_at
+        actividades.append({"id": f"documento-{d.id}", "usuario": u.nombre_completo if u else "Usuario eliminado",
+                            "descripcion": f"{'Envió' if hecho else 'Trabajó en'} el documento {d.name}",
+                            "estado": "Completado" if hecho else "Borrador", "tono": "green" if hecho else "gray", "fecha": _utc(fecha or d.modified_at).isoformat()})
+    # La vista Reportes del admin lista TicketAyuda, no la tabla Reporte: se usa la misma fuente.
+    etiquetas = {"abierto": "Nuevo", "en_revision": "En revisión", "resuelto": "Resuelto", "cerrado": "Cerrado"}
+    for t in db.query(TicketAyuda).order_by(TicketAyuda.fecha_creacion.desc()).limit(20).all():
+        u = usuarios.get(t.usuario_id)
+        cerrado = t.estado in ("resuelto", "cerrado")
+        actividades.append({"id": f"ticket-{t.id}", "usuario": u.nombre_completo if u else (t.nombre_usuario or "Usuario eliminado"), "descripcion": f"Envió el reporte {t.asunto}",
+                            "estado": etiquetas.get(t.estado, t.estado), "tono": "green" if cerrado else "red", "fecha": _utc(t.fecha_creacion).isoformat()})
     actividades.sort(key=lambda x: x["fecha"], reverse=True)
-    return {"documentos_generados": db.query(Documento).count(), "usuarios_activos": db.query(Usuario).filter(Usuario.activo == True).count(),
-            "reportes_pendientes": db.query(Reporte).filter(Reporte.estado != "resuelto").count(), "actividades_recientes": actividades[:8]}
+    reportes_total = db.query(TicketAyuda).count()
+    reportes_resueltos = db.query(TicketAyuda).filter(TicketAyuda.estado.in_(["resuelto", "cerrado"])).count()
+    return {
+        "plantillas_base": plantillas.count(),
+        "documentos_generados": copias.count(),
+        "documentos_completados": copias.filter((Documento.completado == True) | (Documento.enviado_en.isnot(None))).count(),
+        "usuarios_activos": db.query(Usuario).filter(Usuario.activo == True).count(),
+        "reportes_total": reportes_total,
+        "reportes_pendientes": reportes_total - reportes_resueltos,
+        "reportes_resueltos": reportes_resueltos,
+        "semana": {
+            "documentos": copias.filter(Documento.modified_at >= desde_naive).count(),
+            "reportes": db.query(TicketAyuda).filter(TicketAyuda.fecha_creacion >= desde_naive).count(),
+        },
+        "actividades_recientes": actividades[:8],
+    }
 
 
 @app.get("/api/admin/reportes")
@@ -333,7 +457,7 @@ def actualizar_reporte(reporte_id: int, payload: ActualizarReporteRequest, db: S
 @app.get("/api/admin/configuracion")
 def obtener_configuracion(db: Session = Depends(get_db), admin: Usuario = Depends(administrador_actual)):
     config = db.query(ConfiguracionSistema).filter(ConfiguracionSistema.id == 1).first()
-    return {"nombre": admin.nombre_completo, "email": admin.email, "correo_soporte": config.correo_soporte}
+    return {"nombre": admin.nombre_completo, "email": admin.email, "correo_soporte": config.correo_soporte, "correo_recepcion_docs": config.correo_recepcion_docs}
 
 
 @app.put("/api/admin/configuracion")
@@ -355,8 +479,43 @@ def guardar_configuracion(payload: ActualizarConfiguracionRequest, db: Session =
     if payload.correo_soporte is not None:
         if not payload.correo_soporte.strip(): raise HTTPException(status_code=400, detail="El correo de soporte no puede estar vacío")
         config.correo_soporte = payload.correo_soporte.strip()
+    if payload.correo_recepcion_docs is not None:
+        correo = payload.correo_recepcion_docs.strip()
+        if correo and not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", correo): raise HTTPException(status_code=400, detail="El correo de recepción no es válido")
+        config.correo_recepcion_docs = correo or None
     db.commit(); db.refresh(admin)
-    return {"nombre": admin.nombre_completo, "email": admin.email, "correo_soporte": config.correo_soporte}
+    return {"nombre": admin.nombre_completo, "email": admin.email, "correo_soporte": config.correo_soporte, "correo_recepcion_docs": config.correo_recepcion_docs}
+
+
+class ActualizarPerfilRequest(BaseModel):
+    nombre_completo: Optional[str] = None
+    email: Optional[str] = None
+    password_actual: Optional[str] = None
+    password_nueva: Optional[str] = None
+
+
+@app.put("/api/usuario/perfil")
+def actualizar_perfil(payload: ActualizarPerfilRequest, db: Session = Depends(get_db), usuario: Usuario = Depends(usuario_actual)):
+    if payload.password_nueva:
+        if not payload.password_actual or not verify_password(payload.password_actual, usuario.password_hash):
+            raise HTTPException(status_code=400, detail="La contraseña actual es incorrecta")
+        if len(payload.password_nueva) < 6:
+            raise HTTPException(status_code=400, detail="La contraseña nueva debe tener al menos 6 caracteres")
+        usuario.password_hash = hash_password(payload.password_nueva)
+    if payload.nombre_completo is not None:
+        if not payload.nombre_completo.strip():
+            raise HTTPException(status_code=400, detail="El nombre no puede estar vacío")
+        usuario.nombre_completo = payload.nombre_completo.strip()
+    if payload.email is not None:
+        email = payload.email.strip()
+        if not email or "@" not in email:
+            raise HTTPException(status_code=400, detail="Correo electrónico inválido")
+        otro = db.query(Usuario).filter(Usuario.email == email, Usuario.id != usuario.id).first()
+        if otro:
+            raise HTTPException(status_code=400, detail="El correo ya está registrado")
+        usuario.email = email
+    db.commit(); db.refresh(usuario)
+    return _usuario_json(usuario)
 
 
 # -------------------- DOCUMENTOS Y PLANTILLAS --------------------
@@ -384,7 +543,10 @@ def serialize_doc(doc: Documento, db: Session, include_schema: bool = False) -> 
         "assignedUserName": assigned_user_name,
         "templateId": doc.template_id,
         "revocadoEnOrigen": bool(doc.revocado_en_origen),
+        "accesoSolicitado": bool(doc.acceso_solicitado),
         "enviado": doc.enviado_en is not None,
+        "completado": bool(doc.completado),
+        "fecha_completado": doc.fecha_completado.replace(tzinfo=timezone.utc).isoformat() if doc.fecha_completado and doc.fecha_completado.tzinfo is None else (doc.fecha_completado.isoformat() if doc.fecha_completado else None),
     }
 
     if include_schema:
@@ -425,12 +587,38 @@ def _autorizar_acceso_documento(doc: Documento, usuario: Usuario) -> None:
         raise HTTPException(status_code=403, detail="No tiene permiso para acceder a este documento")
 
 
+def _sincronizar_copia_plantilla(doc: Documento, db: Session) -> None:
+    if not doc.template_id or doc.completado or doc.enviado_en is not None:
+        return
+    plantilla = db.query(Documento).filter(
+        Documento.id == doc.template_id, Documento.template_id.is_(None)
+    ).first()
+    if not plantilla:
+        return
+    changed = any((getattr(doc, field) or "") != (getattr(plantilla, field) or "") for field in (
+        "labels_json", "boxes_json", "detected_fonts_json", "name", "file_name", "stored_path", "kind"
+    ))
+    if not changed:
+        return
+    doc.labels_json = plantilla.labels_json
+    doc.boxes_json = plantilla.boxes_json
+    doc.detected_fonts_json = plantilla.detected_fonts_json
+    doc.name = plantilla.name
+    doc.file_name = plantilla.file_name
+    doc.stored_path = plantilla.stored_path
+    doc.kind = plantilla.kind
+    db.add(doc)
+    db.commit()
+    db.refresh(doc)
+
+
 @app.get("/api/documentos/{doc_id}")
 def obtener_documento(doc_id: int, db: Session = Depends(get_db), usuario: Usuario = Depends(usuario_actual)):
     doc = db.query(Documento).filter(Documento.id == doc_id).first()
     if not doc:
         raise HTTPException(status_code=404, detail="Documento no encontrado")
     _autorizar_acceso_documento(doc, usuario)
+    _sincronizar_copia_plantilla(doc, db)
     return serialize_doc(doc, db, include_schema=True)
 
 
@@ -474,7 +662,7 @@ async def subir_documento(
         shutil.copyfileobj(file.file, buffer)
 
     nuevo = Documento(
-        name=name.strip() or original_name,
+        name=name.strip() or os.path.splitext(os.path.basename(original_name))[0].strip() or "Documento",
         file_name=original_name,
         stored_path=stored_filename,
         kind=kind,
@@ -524,6 +712,68 @@ def _tiene_trabajo(doc: Documento) -> bool:
     return any(str(v).strip() for v in valores.values()) if isinstance(valores, dict) else False
 
 
+def _copias_de_plantilla(db: Session, plantilla: Documento, usuario_id: int) -> list:
+    """Copias del usuario para esta plantilla: por template_id o, en datos heredados, por el mismo archivo base."""
+    return (
+        db.query(Documento)
+        .filter(
+            Documento.assigned_user_id == usuario_id,
+            Documento.id != plantilla.id,
+            (Documento.template_id == plantilla.id) | (Documento.stored_path == plantilla.stored_path),
+        )
+        .order_by(Documento.id)
+        .all()
+    )
+
+
+def _mejor_copia(copias: list) -> Documento:
+    """La que más progreso tiene (completada/enviada > con valores > activa > más reciente)."""
+    return max(copias, key=lambda c: (bool(c.completado or c.enviado_en), _tiene_trabajo(c), not c.revocado_en_origen,
+                                      _utc(c.modified_at).timestamp(), c.id))
+
+
+def _consolidar_copias(db: Session, copias: list) -> Documento:
+    """Deja una sola copia: conserva la mejor, le suma los valores y la solicitud de acceso de las demás y borra el resto."""
+    ganadora = _mejor_copia(copias)
+    for extra in copias:
+        if extra.id == ganadora.id:
+            continue
+        try:
+            v_g = json.loads(ganadora.valores_json or "{}"); v_e = json.loads(extra.valores_json or "{}")
+        except json.JSONDecodeError:
+            v_g, v_e = {}, {}
+        if isinstance(v_g, dict) and isinstance(v_e, dict):
+            for k, v in v_e.items():
+                if not str(v_g.get(k, "")).strip() and str(v).strip():
+                    v_g[k] = v
+            ganadora.valores_json = json.dumps(v_g, ensure_ascii=False)
+        if extra.acceso_solicitado and ganadora.revocado_en_origen and not ganadora.acceso_solicitado:
+            ganadora.acceso_solicitado = True
+            ganadora.acceso_solicitado_en = extra.acceso_solicitado_en
+        db.delete(extra)
+    return ganadora
+
+
+def _documentos_unicos_usuario(db: Session, docs: list) -> list:
+    """Quita duplicados heredados: una fila por archivo base y usuario; si hay copias, la plantilla maestra deja de estar asignada."""
+    grupos: dict = {}
+    for d in docs:
+        grupos.setdefault(d.stored_path, []).append(d)
+    resultado, cambio = [], False
+    for grupo in grupos.values():
+        ids_maestras = {d.template_id for d in grupo if d.template_id}
+        maestras = [d for d in grupo if d.template_id is None and d.id in ids_maestras]
+        copias = [d for d in grupo if d not in maestras]
+        for m in maestras:
+            m.assigned_user_id = None; cambio = True
+        if len(copias) > 1:
+            copias = [_consolidar_copias(db, copias)]; cambio = True
+        resultado.extend(copias or [])
+    if cambio:
+        db.commit()
+    return resultado
+
+
 @app.patch("/api/documentos/{doc_id}/publicar")
 def publicar_o_asignar_documento(
     doc_id: int,
@@ -566,12 +816,78 @@ def publicar_o_asignar_documento(
         usuario = db.query(Usuario).filter(Usuario.id == payload.assigned_user_id).first()
         if not usuario:
             raise HTTPException(status_code=404, detail="Usuario destino no encontrado")
-        doc.assigned_user_id = usuario.id
+        existentes = _copias_de_plantilla(db, doc, usuario.id)
+        if existentes:
+            # Reactiva la copia existente (sin duplicar ni asignar además la plantilla maestra).
+            copia = _consolidar_copias(db, existentes)
+            copia.template_id = doc.id
+            copia.revocado_en_origen = False
+            copia.acceso_solicitado = False
+            copia.acceso_solicitado_en = None
+            if not copia.completado and copia.enviado_en is None:
+                copia.labels_json = doc.labels_json
+                copia.boxes_json = doc.boxes_json
+                copia.detected_fonts_json = doc.detected_fonts_json
+                copia.name = doc.name
+                copia.file_name = doc.file_name
+                copia.stored_path = doc.stored_path
+                copia.kind = doc.kind
+            doc.assigned_user_id = None
+        else:
+            doc.assigned_user_id = usuario.id
 
     doc.modified_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(doc)
     return serialize_doc(doc, db, include_schema=False)
+
+
+class ResolverSolicitudAccesoRequest(BaseModel):
+    aprobar: bool
+
+
+@app.post("/api/usuario/documentos/{doc_id}/solicitar-acceso")
+def solicitar_acceso_documento(doc_id: int, db: Session = Depends(get_db), usuario: Usuario = Depends(usuario_actual)):
+    copia = db.query(Documento).filter(Documento.id == doc_id).first()
+    if not copia:
+        raise HTTPException(status_code=404, detail="Documento no encontrado")
+    if copia.assigned_user_id != usuario.id:
+        raise HTTPException(status_code=403, detail="El documento no pertenece a este usuario")
+    if not copia.revocado_en_origen:
+        raise HTTPException(status_code=400, detail="El documento no está bloqueado")
+    if not copia.acceso_solicitado:
+        copia.acceso_solicitado = True
+        copia.acceso_solicitado_en = datetime.now(timezone.utc)
+        db.commit()
+        db.refresh(copia)
+    return serialize_doc(copia, db, include_schema=True)
+
+
+@app.get("/api/admin/solicitudes-acceso")
+def listar_solicitudes_acceso(db: Session = Depends(get_db), admin: Usuario = Depends(administrador_actual)):
+    rows = db.query(Documento).filter(Documento.acceso_solicitado == True, Documento.revocado_en_origen == True).order_by(Documento.acceso_solicitado_en.desc(), Documento.id.desc()).all()
+    resultado = []
+    for copia in rows:
+        usuario = db.query(Usuario).filter(Usuario.id == copia.assigned_user_id).first()
+        resultado.append({"doc_id": copia.id, "template_id": copia.template_id, "doc_name": copia.name,
+            "usuario_id": copia.assigned_user_id, "usuario_nombre": usuario.nombre_completo if usuario else "Usuario eliminado",
+            "usuario_email": usuario.email if usuario else "", "solicitado_en": _utc(copia.acceso_solicitado_en).isoformat()})
+    return resultado
+
+
+@app.patch("/api/admin/solicitudes-acceso/{doc_id}/resolver")
+def resolver_solicitud_acceso(doc_id: int, payload: ResolverSolicitudAccesoRequest, db: Session = Depends(get_db), admin: Usuario = Depends(administrador_actual)):
+    copia = db.query(Documento).filter(Documento.id == doc_id, Documento.acceso_solicitado == True, Documento.revocado_en_origen == True).first()
+    if not copia:
+        raise HTTPException(status_code=404, detail="Solicitud pendiente no encontrada")
+    if payload.aprobar:
+        copia.revocado_en_origen = False
+        _sincronizar_copia_plantilla(copia, db)
+    copia.acceso_solicitado = False
+    copia.acceso_solicitado_en = None
+    db.commit()
+    db.refresh(copia)
+    return serialize_doc(copia, db, include_schema=True)
 
 
 @app.delete("/api/documentos/{doc_id}")
@@ -649,7 +965,7 @@ def estampar_pdf(template_path: str, output_path: str, boxes: list, valores: dic
 
             lbl = str(box.get("label") or "")
             value = ""
-            for key in (box.get("labelId"), lbl, lbl.strip().lower()):
+            for key in (box.get("id"), box.get("labelId"), lbl, lbl.strip().lower()):
                 if key and key in valores:
                     value = valores[key]
                     break
@@ -689,8 +1005,11 @@ def listar_documentos_usuario(usuario_id: int, db: Session = Depends(get_db)):
     admin = db.query(Usuario).filter(Usuario.rol == "admin", Usuario.activo == True).first()
     admin_email = admin.email if admin else "admin@prueba.com"
 
+    docs = sorted(_documentos_unicos_usuario(db, docs), key=lambda d: _utc(d.modified_at), reverse=True)
+
     resultado = []
     for d in docs:
+        _sincronizar_copia_plantilla(d, db)
         item = serialize_doc(d, db, include_schema=True)
         item["visto"] = bool(d.visto)
         item["adminEmail"] = admin_email
@@ -719,11 +1038,12 @@ def iniciar_documento_desde_plantilla(
     if not plantilla:
         raise HTTPException(status_code=404, detail="Plantilla no encontrada o no publicada")
 
-    copia = (
-        db.query(Documento)
-        .filter(Documento.template_id == plantilla.id, Documento.assigned_user_id == usuario_id)
-        .first()
-    )
+    existentes = _copias_de_plantilla(db, plantilla, usuario_id)
+    copia = _consolidar_copias(db, existentes) if existentes else None
+    if copia:
+        if copia.template_id is None:
+            copia.template_id = plantilla.id  # copia heredada sin vínculo con su plantilla
+        db.commit(); db.refresh(copia)
     if not copia:
         copia = Documento(
             name=plantilla.name,
@@ -844,3 +1164,108 @@ def descargar_documento_generado(doc_id: int, archivo: str, db: Session = Depend
         media_type="application/pdf",
         filename=f"{safe_name}_completado.pdf",
     )
+
+
+# -------------------- AYUDA Y FINALIZACION --------------------
+TICKET_CATEGORIAS = {"error_documento", "problema_firma", "acceso_cuenta", "solicitud_plantilla", "sugerencia", "otro"}
+TICKET_PRIORIDADES = {"baja", "media", "alta", "urgente"}
+TICKET_ESTADOS = {"abierto", "en_revision", "resuelto", "cerrado"}
+
+def _ticket_json(ticket: TicketAyuda) -> dict:
+    def iso(value):
+        if value is None: return None
+        if value.tzinfo is None: value = value.replace(tzinfo=timezone.utc)
+        return value.isoformat()
+    return {"id": ticket.id, "usuario_id": ticket.usuario_id, "nombre_usuario": ticket.nombre_usuario,
+            "email_usuario": ticket.email_usuario, "categoria": ticket.categoria, "prioridad": ticket.prioridad,
+            "documento_relacionado_id": ticket.documento_relacionado_id, "asunto": ticket.asunto,
+            "descripcion": ticket.descripcion, "captura_base64": ticket.captura_base64, "estado": ticket.estado,
+            "respuesta_admin": ticket.respuesta_admin, "fecha_creacion": iso(ticket.fecha_creacion),
+            "fecha_actualizacion": iso(ticket.fecha_actualizacion)}
+
+@app.post("/api/ayuda/tickets", status_code=201)
+def crear_ticket_ayuda(payload: CrearTicketRequest, db: Session = Depends(get_db)):
+    if payload.categoria not in TICKET_CATEGORIAS or payload.prioridad not in TICKET_PRIORIDADES:
+        raise HTTPException(status_code=400, detail="Categoría o prioridad inválida.")
+    usuario = db.query(Usuario).filter(Usuario.id == payload.usuario_id).first()
+    if not usuario: raise HTTPException(status_code=404, detail="Usuario no encontrado.")
+    ticket = TicketAyuda(usuario_id=usuario.id, nombre_usuario=usuario.nombre_completo, email_usuario=usuario.email,
+        categoria=payload.categoria, prioridad=payload.prioridad, documento_relacionado_id=payload.documento_relacionado_id,
+        asunto=payload.asunto.strip(), descripcion=payload.descripcion, captura_base64=payload.captura_base64)
+    db.add(ticket); db.commit(); db.refresh(ticket)
+    admin_user = db.query(Usuario).filter(Usuario.rol == "admin").first()
+    config = db.query(ConfiguracionSistema).filter(ConfiguracionSistema.id == 1).first()
+    recipient = (config.correo_soporte if config and config.correo_soporte else None) or email_service.admin_email or (admin_user.email if admin_user else "admin@prueba.com")
+    email_service.send_email(recipient, f"Nuevo ticket de ayuda: {ticket.asunto}",
+        f"<html><body><h2>Nuevo ticket</h2><p><b>Usuario:</b> {ticket.nombre_usuario} ({ticket.email_usuario})</p><p><b>Categoría:</b> {ticket.categoria}</p><p><b>Prioridad:</b> {ticket.prioridad}</p><p>{ticket.descripcion}</p></body></html>")
+    return _ticket_json(ticket)
+
+@app.get("/api/ayuda/tickets/usuario/{usuario_id}")
+def listar_tickets_usuario(usuario_id: int, db: Session = Depends(get_db)):
+    return [_ticket_json(t) for t in db.query(TicketAyuda).filter(TicketAyuda.usuario_id == usuario_id).order_by(TicketAyuda.fecha_creacion.desc()).all()]
+
+@app.get("/api/admin/ayuda/tickets")
+def listar_tickets_admin(estado: Optional[str] = None, prioridad: Optional[str] = None, db: Session = Depends(get_db), admin: Usuario = Depends(administrador_actual)):
+    q = db.query(TicketAyuda)
+    if estado:
+        if estado not in TICKET_ESTADOS: raise HTTPException(status_code=400, detail="Estado inválido.")
+        q = q.filter(TicketAyuda.estado == estado)
+    if prioridad:
+        if prioridad not in TICKET_PRIORIDADES: raise HTTPException(status_code=400, detail="Prioridad inválida.")
+        q = q.filter(TicketAyuda.prioridad == prioridad)
+    return [_ticket_json(t) for t in q.order_by(TicketAyuda.fecha_creacion.desc()).all()]
+
+@app.patch("/api/admin/ayuda/tickets/{ticket_id}")
+def actualizar_ticket_admin(ticket_id: int, payload: ActualizarTicketRequest, db: Session = Depends(get_db), admin: Usuario = Depends(administrador_actual)):
+    ticket = db.query(TicketAyuda).filter(TicketAyuda.id == ticket_id).first()
+    if not ticket: raise HTTPException(status_code=404, detail="Ticket no encontrado.")
+    if payload.estado is not None:
+        if payload.estado not in TICKET_ESTADOS: raise HTTPException(status_code=400, detail="Estado inválido.")
+        ticket.estado = payload.estado
+    if payload.respuesta_admin is not None: ticket.respuesta_admin = payload.respuesta_admin
+    ticket.fecha_actualizacion = datetime.now(timezone.utc)
+    db.commit(); db.refresh(ticket)
+    if payload.respuesta_admin or ticket.estado == "resuelto":
+        email_service.send_email(ticket.email_usuario, f"Actualización de tu ticket: {ticket.asunto}",
+            f"<html><body><h2>Actualización de ticket</h2><p>Estado: {ticket.estado}</p><p>{ticket.respuesta_admin or ''}</p></body></html>")
+    return _ticket_json(ticket)
+
+@app.post("/api/usuario/documentos/{doc_id}/finalizar-y-enviar")
+def finalizar_y_enviar_documento(doc_id: int, payload: EnviarDocumentoCorreoRequest, db: Session = Depends(get_db)):
+    doc = db.query(Documento).filter(Documento.id == doc_id).first()
+    if not doc: raise HTTPException(status_code=404, detail="Documento no encontrado.")
+    if doc.assigned_user_id not in (None, payload.usuario_id): raise HTTPException(status_code=403, detail="El documento no pertenece a este usuario.")
+    if doc.kind != "pdf": raise HTTPException(status_code=400, detail="Solo se pueden generar archivos PDF con las plantillas disponibles.")
+    template_path = os.path.join(PLANTILLAS_DIR, doc.stored_path)
+    if not os.path.isfile(template_path): raise HTTPException(status_code=404, detail="Plantilla base no encontrada.")
+    try: boxes = json.loads(doc.boxes_json or "[]")
+    except json.JSONDecodeError: boxes = []
+    filename = f"{doc.id}_{uuid.uuid4().hex}.pdf"
+    output_path = os.path.join(GENERADOS_DIR, filename)
+    try: estampar_pdf(template_path, output_path, boxes, payload.valores)
+    except Exception as exc:
+        if os.path.exists(output_path): os.remove(output_path)
+        raise HTTPException(status_code=500, detail=f"No se pudo generar el PDF: {exc}")
+    now = datetime.now(timezone.utc)
+    doc.valores_json = json.dumps(payload.valores, ensure_ascii=False)
+    doc.completado = True
+    doc.fecha_completado = now
+    doc.enviado_en = now
+    db.commit()
+    # El correo receptor sale de la BD (no del cliente); respaldo: admin principal si aún no se configuró.
+    config = db.query(ConfiguracionSistema).filter(ConfiguracionSistema.id == 1).first()
+    correo_empresa = (config.correo_recepcion_docs if config else None) or ""
+    if not correo_empresa.strip():
+        admin_principal = db.query(Usuario).filter(Usuario.rol == "admin", Usuario.activo == True).order_by(Usuario.id).first()
+        correo_empresa = admin_principal.email if admin_principal else ""
+    correo_usuario = payload.correo_usuario
+    dueno = db.query(Usuario).filter(Usuario.id == payload.usuario_id).first()
+    if dueno: correo_usuario = dueno.email
+    enviados = email_service.send_document_completed([correo_usuario, correo_empresa], doc.name, now.isoformat(), output_path)
+    ok_usuario = enviados.get(correo_usuario.strip(), False)
+    ok_empresa = enviados.get(correo_empresa.strip(), False) if correo_empresa.strip() else False
+    if ok_usuario and ok_empresa: mensaje = "Documento enviado a tu correo y a la bandeja de la empresa"
+    elif ok_usuario or ok_empresa: mensaje = f"Documento '{doc.name}' generado, pero solo se pudo enviar a {'tu correo' if ok_usuario else 'la bandeja de la empresa'}."
+    else: mensaje = f"Documento '{doc.name}' generado, pero no se pudo enviar por correo. Descárgalo desde aquí."
+    return {"ok": True, "message": mensaje, "enviado_usuario": ok_usuario, "enviado_empresa": ok_empresa,
+            "archivo_generado_url": f"/api/usuario/documentos/{doc.id}/descargar/{filename}", "fecha_completado": now.isoformat()}

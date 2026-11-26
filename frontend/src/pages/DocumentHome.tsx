@@ -8,12 +8,14 @@ import {
   addDocument,
   assignDocumentToUser,
   fetchUsuarios,
+  fetchAccessRequests,
+  resolveAccessRequest,
   isDocumentsLoading,
   nextDocumentName,
   togglePublish,
   useDocuments,
 } from '../store/documentStore';
-import type { UsuarioOption } from '../store/documentStore';
+import type { AccessRequest, UsuarioOption } from '../store/documentStore';
 
 export default function DocumentHome() {
   const docs = useDocuments();
@@ -23,12 +25,37 @@ export default function DocumentHome() {
   const [dragOver, setDragOver] = useState(false);
   const [notice, setNotice] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
+  const [accessRequests, setAccessRequests] = useState<AccessRequest[]>([]);
+  const [requestsLoading, setRequestsLoading] = useState(true);
+  const [requestsError, setRequestsError] = useState('');
+  const [resolvingId, setResolvingId] = useState<number | null>(null);
 
   useEffect(() => {
+    void loadAccessRequests();
+    const refresh = () => { void fetchAccessRequests().then(setAccessRequests).catch(() => undefined); };
+    const timer = window.setInterval(refresh, 20000);
+    window.addEventListener('focus', refresh);
     fetchUsuarios()
       .then(setUsuarios)
       .catch(() => setUsuarios([]));
+    return () => { window.clearInterval(timer); window.removeEventListener('focus', refresh); };
   }, []);
+
+  async function loadAccessRequests() {
+    setRequestsLoading(true);
+    setRequestsError('');
+    try { setAccessRequests(await fetchAccessRequests()); }
+    catch (err) { setRequestsError(err instanceof Error ? err.message : 'No se pudieron cargar las solicitudes.'); }
+    finally { setRequestsLoading(false); }
+  }
+
+  async function handleResolveAccess(docId: number, aprobar: boolean) {
+    setResolvingId(docId);
+    setRequestsError('');
+    try { await resolveAccessRequest(docId, aprobar); await loadAccessRequests(); }
+    catch (err) { setRequestsError(err instanceof Error ? err.message : 'No se pudo resolver la solicitud.'); }
+    finally { setResolvingId(null); }
+  }
 
   const recent = useMemo(
     () => [...docs].sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt)),
@@ -92,6 +119,21 @@ export default function DocumentHome() {
         </p>
       </div>
 
+      <div className="mb-8">
+        <section className="rounded-[15px] bg-white p-5">
+          <div className="flex items-center justify-between">
+            <h2 className="text-base font-semibold text-main">Solicitudes de acceso para llenar</h2>
+            <span className="rounded-full bg-primary/10 px-3 py-1 text-xs font-semibold text-primary">{requestsLoading ? '…' : accessRequests.length}</span>
+          </div>
+          {requestsLoading ? <p className="mt-3 text-sm text-muted">Cargando solicitudes…</p> : accessRequests.length === 0 ? <p className="mt-3 text-sm text-muted">No hay solicitudes pendientes.</p> :
+            <div className="mt-4 divide-y divide-bg-light">{accessRequests.map((request) => <div key={request.doc_id} className="flex flex-wrap items-center justify-between gap-3 py-3">
+              <div><p className="text-sm font-semibold text-main">{request.usuario_nombre} — {request.doc_name}</p><p className="text-xs text-muted">{request.usuario_email} · {new Date(request.solicitado_en).toLocaleString()}</p></div>
+              <div className="flex gap-2"><button type="button" disabled={resolvingId === request.doc_id} onClick={() => void handleResolveAccess(request.doc_id, true)} className="rounded-full bg-emerald-600 px-4 py-2 text-xs font-semibold text-white disabled:opacity-60">Aprobar acceso</button><button type="button" disabled={resolvingId === request.doc_id} onClick={() => void handleResolveAccess(request.doc_id, false)} className="rounded-full border border-brand-red px-4 py-2 text-xs font-semibold text-brand-red disabled:opacity-60">Rechazar</button></div>
+            </div>)}</div>}
+          {requestsError && <p className="mt-3 text-xs font-semibold text-brand-red">{requestsError}</p>}
+        </section>
+      </div>
+
       <div className="mb-10">
         <button
           type="button"
@@ -141,7 +183,7 @@ export default function DocumentHome() {
         </p>
       ) : (
         <>
-          <div className="mb-2 hidden items-center gap-4 px-5 text-[11px] font-semibold uppercase tracking-wide text-muted sm:flex">
+          <div className="mb-2 hidden items-center gap-4 px-5 text-[11px] font-semibold uppercase tracking-wide text-muted lg:flex">
             <span className="flex-1 pl-[60px]">Nombre</span>
             <span className={DATE_COL}>Última modificación</span>
             <span className={ACTION_COL} />

@@ -5,7 +5,7 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
   const token = localStorage.getItem('token');
   if (token) headers.set('Authorization', `Bearer ${token}`);
   if (init.body && !(init.body instanceof FormData) && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
-  const response = await fetch(`${API_URL}${path}`, { ...init, headers });
+  const response = await fetch(`${API_URL}${path}`, { ...init, headers, ...(init.method ? {} : { cache: 'no-store' }) });
   if (response.status === 401) {
     // Sesión inválida o expirada: limpiar y volver al login
     localStorage.removeItem('token');
@@ -24,7 +24,7 @@ export async function apiFetchBlob(path: string, init: RequestInit = {}): Promis
   const headers = new Headers(init.headers);
   const token = localStorage.getItem('token');
   if (token) headers.set('Authorization', `Bearer ${token}`);
-  const response = await fetch(`${API_URL}${path}`, { ...init, headers });
+  const response = await fetch(`${API_URL}${path}`, { ...init, headers, ...(init.method ? {} : { cache: 'no-store' }) });
   if (response.status === 401) {
     localStorage.removeItem('token');
     localStorage.removeItem('usuario');

@@ -13,8 +13,8 @@ interface DocumentRowProps {
   onAssignUser: (docId: string, userId: number | null) => Promise<void>;
 }
 
-export const DATE_COL = 'sm:w-[150px]';
-export const ACTION_COL = 'sm:w-[360px]';
+export const DATE_COL = '';
+export const ACTION_COL = '';
 
 export default function DocumentRow({
   doc,
@@ -139,7 +139,7 @@ export default function DocumentRow({
     <div className="relative">
       <div
         onClick={() => onOpen(doc.id)}
-        className="flex cursor-pointer flex-col gap-3 rounded-[15px] bg-card px-5 py-3.5 transition-colors duration-200 hover:bg-card-hover sm:flex-row sm:items-center sm:gap-4"
+        className="flex cursor-pointer flex-col justify-between gap-3 rounded-[15px] bg-card px-5 py-3.5 transition-colors duration-200 hover:bg-card-hover lg:flex-row lg:items-center"
       >
         <div className="flex min-w-0 flex-1 items-center gap-4">
           <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-[10px] bg-white">
@@ -278,12 +278,12 @@ export default function DocumentRow({
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Buscar usuario por nombre o correo..."
-              className="min-w-[220px] rounded-[10px] bg-bg-light px-3 py-1.5 text-xs font-medium text-main outline-none placeholder:text-muted focus:ring-2 focus:ring-primary/40"
+              className="w-full sm:w-[260px] rounded-[10px] bg-bg-light px-3 py-1.5 text-xs font-medium text-main outline-none placeholder:text-muted focus:ring-2 focus:ring-primary/40"
             />
             <select
               value={selectedUserId}
               onChange={(e) => setSelectedUserId(e.target.value)}
-              className="min-w-[220px] rounded-[10px] bg-bg-light px-3 py-1.5 text-xs font-medium text-main outline-none focus:ring-2 focus:ring-primary/40"
+              className="w-full sm:w-[260px] rounded-[10px] bg-bg-light px-3 py-1.5 text-xs font-medium text-main outline-none focus:ring-2 focus:ring-primary/40"
             >
               <option value="">-- Ningún usuario (sin asignación directa) --</option>
               {usuariosFiltrados.map((u) => (

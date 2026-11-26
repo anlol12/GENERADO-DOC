@@ -23,6 +23,10 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function baseName(file: File): string {
+  return file.name.replace(/\.[^.]+$/, '').trim();
+}
+
 export default function UploadDocumentModal({
   initialFile = null,
   nextName,
@@ -31,7 +35,7 @@ export default function UploadDocumentModal({
 }: UploadDocumentModalProps) {
   const validInitial = initialFile && isPdf(initialFile) ? initialFile : null;
   const [file, setFile] = useState<File | null>(validInitial);
-  const [name, setName] = useState('');
+  const [name, setName] = useState(validInitial ? baseName(validInitial) : '');
   const [error, setError] = useState(initialFile && !validInitial ? UNSUPPORTED : '');
   const [uploading, setUploading] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -51,6 +55,7 @@ export default function UploadDocumentModal({
     }
     setError('');
     setFile(f);
+    setName(baseName(f));
   }
 
   function handleInput(e: ChangeEvent<HTMLInputElement>) {
@@ -63,7 +68,7 @@ export default function UploadDocumentModal({
     setUploading(true);
     setError('');
     try {
-      await onCreate(file, name.trim() || nextName, openEditor);
+      await onCreate(file, name.trim() || baseName(file) || nextName, openEditor);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Error al subir el documento');
       setUploading(false);
@@ -81,7 +86,7 @@ export default function UploadDocumentModal({
         role="dialog"
         aria-modal="true"
         aria-labelledby="upload-title"
-        className="max-h-full w-full max-w-[480px] overflow-auto rounded-[20px] bg-white p-6 shadow-[0_10px_30px_rgba(0,0,0,0.2)]"
+        className="mx-4 max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-[20px] bg-white p-6 shadow-[0_10px_30px_rgba(0,0,0,0.2)]"
       >
         <div className="mb-5 flex items-start justify-between gap-4">
           <div>
@@ -154,12 +159,12 @@ export default function UploadDocumentModal({
             onChange={(e) => setName(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && void submit(false)}
             disabled={uploading}
-            placeholder={nextName}
+            placeholder={file ? baseName(file) : nextName}
             maxLength={80}
             className="w-full rounded-[10px] bg-bg-light px-3 py-2.5 text-sm text-main outline-none focus:ring-2 focus:ring-primary/40"
           />
           <span className="text-[11px] text-muted">
-            Si lo dejas vacío se llamará «{nextName}».
+            Si lo dejas vacío se llamará «{file ? baseName(file) || nextName : nextName}».
           </span>
         </label>
 

@@ -255,12 +255,16 @@ async function renderPdf(
     canvas.style.width = `${viewport.width}px`;
     canvas.style.height = `${viewport.height}px`;
     canvas.style.display = 'block';
+    canvas.style.maxWidth = '100%';
+    canvas.style.height = 'auto';
 
     const wrap = document.createElement('div');
     wrap.dataset.pageIndex = String(n);
     wrap.className = 'mx-auto mb-4 bg-white shadow-md';
     wrap.style.width = `${viewport.width}px`;
-    wrap.style.height = `${viewport.height}px`;
+    wrap.style.height = 'auto';
+    wrap.style.maxWidth = '100%';
+    wrap.style.aspectRatio = `${viewport.width} / ${viewport.height}`;
     wrap.appendChild(canvas);
 
     if (isCancelled()) return [];
@@ -864,7 +868,7 @@ export default function AdminEditor() {
     const rect = pageRects.find((r) => r.page === box.page) ?? pageRects[0];
     if (!rect || box.dataType === 'signature') return normalizeBox(box);
 
-    const key = box.labelId || box.label;
+    const key = box.id;
     const sample =
       customSampleText !== undefined
         ? customSampleText
@@ -1030,9 +1034,9 @@ export default function AdminEditor() {
     });
   }
 
-  function handleLiveInputChange(label: FieldLabel, rawInput: string) {
-    const formatted = formatFieldValue(rawInput, label.dataType, label.dashRule);
-    setLiveValues((prev) => ({ ...prev, [label.id]: formatted }));
+  function handleLiveInputChange(box: MappedBox, rawInput: string) {
+    const formatted = formatFieldValue(rawInput, box.dataType, box.dashRule);
+    setLiveValues((prev) => ({ ...prev, [box.id]: formatted }));
 
   }
 
@@ -1117,6 +1121,11 @@ export default function AdminEditor() {
             return copy;
           });
         }
+        setLiveValues((vals) => {
+          const copy = { ...vals };
+          delete copy[id];
+          return copy;
+        });
       }
       return next;
     });
@@ -1129,6 +1138,7 @@ export default function AdminEditor() {
       detected_fonts: detectedFonts,
       labels,
       boxes: boxes.map((b) => ({
+        id: b.id,
         kind: b.kind,
         labelId: b.labelId,
         label: b.label,
@@ -1171,7 +1181,7 @@ export default function AdminEditor() {
         </div>
 
         {file && (
-          <div className="flex rounded-[20px] bg-white p-1 shadow-sm">
+          <div className="flex flex-wrap rounded-[20px] bg-white p-1 shadow-sm">
             <button
               type="button"
               onClick={() => setViewMode('design')}
@@ -1253,7 +1263,7 @@ export default function AdminEditor() {
                     if (e.key === 'Enter') commitDocName();
                     if (e.key === 'Escape') setIsEditingName(false);
                   }}
-                  className="w-[260px] rounded-[8px] bg-bg-light px-2.5 py-1 text-xs font-semibold text-main outline-none ring-2 ring-primary"
+                  className="w-full sm:w-[260px] rounded-[8px] bg-bg-light px-2.5 py-1 text-xs font-semibold text-main outline-none ring-2 ring-primary"
                 />
               ) : (
                 <div
@@ -1333,16 +1343,20 @@ export default function AdminEditor() {
               </p>
             ) : (
               <div className="flex flex-col gap-3">
-                {placedLabels.map((lbl) => (
+                {boxes.filter((box) => box.kind === 'field').map((box) => {
+                  const lbl = labels.find((item) => item.id === box.labelId) ?? { id: box.labelId || box.id, name: box.label, dataType: box.dataType, dashRule: box.dashRule };
+                  const sameLabelBoxes = boxes.filter((item) => item.kind === 'field' && (item.labelId || item.label) === (box.labelId || box.label));
+                  const fieldName = sameLabelBoxes.length > 1 ? `${lbl.name} #${sameLabelBoxes.findIndex((item) => item.id === box.id) + 1}` : lbl.name;
+                  return (
                   <div
-                    key={lbl.id}
+                    key={box.id}
                     className="flex flex-col gap-1 rounded-[10px] border border-card/80 p-2.5"
                   >
                     <div className="flex items-center justify-between gap-2">
-                      <label className="text-xs font-semibold text-main">{lbl.name}</label>
+                      <label className="text-xs font-semibold text-main">{fieldName}</label>
                       <button
                         type="button"
-                        onClick={() => removeLabelFromDocument(lbl)}
+                        onClick={() => deleteBox(box.id)}
                         className="inline-flex cursor-pointer items-center gap-1 border-none bg-transparent p-0 text-[10px] font-semibold text-brand-red hover:underline"
                       >
                         <Trash2 className="h-3 w-3" />
@@ -1352,21 +1366,21 @@ export default function AdminEditor() {
 
                     {lbl.dataType === 'signature' ? (
                       <SignaturePadBox
-                        value={liveValues[lbl.id] ?? ''}
-                        onChange={(dataUrl) => handleLiveInputChange(lbl, dataUrl)}
+                        value={liveValues[box.id] ?? ''}
+                        onChange={(dataUrl) => handleLiveInputChange(box, dataUrl)}
                       />
                     ) : (
                       <>
                         <input
                           type="text"
-                          value={liveValues[lbl.id] ?? ''}
-                          onChange={(e) => handleLiveInputChange(lbl, e.target.value)}
+                          value={liveValues[box.id] ?? ''}
+                          onChange={(e) => handleLiveInputChange(box, e.target.value)}
                           placeholder={
                             lbl.dashRule === 'auto_id'
                               ? 'Ej: 01234567-8'
                               : lbl.dashRule === 'auto_phone'
                                 ? 'Ej: 7777-8888'
-                                : `Ingresa ${lbl.name.toLowerCase()}…`
+                                : `Ingresa ${fieldName.toLowerCase()}…`
                           }
                           className={inputClass}
                         />
@@ -1381,7 +1395,7 @@ export default function AdminEditor() {
                       </>
                     )}
                   </div>
-                ))}
+                );})}
               </div>
             )}
           </section>
@@ -1693,7 +1707,7 @@ export default function AdminEditor() {
         </aside>
 
         {/* COLUMNA DERECHA: Lienzo */}
-        <div className="min-h-[500px] min-w-0 flex-1 rounded-[15px] bg-card p-5 lg:h-full lg:overflow-y-auto">
+        <div className="min-h-[500px] min-w-0 flex-1 overflow-x-auto rounded-[15px] bg-card p-3 sm:p-5 lg:h-full lg:overflow-y-auto">
           {editMode && file && viewMode === 'design' && (
             <p className="mb-3 text-xs text-muted">
               {boxKind === 'field'
@@ -1754,7 +1768,7 @@ export default function AdminEditor() {
                   {boxes
                     .filter((b) => b.page === rect.page)
                     .map((box) => {
-                      const key = box.labelId || box.label;
+                      const key = box.id;
                       const displayBox =
                         viewMode === 'live' && box.kind === 'field'
                           ? adaptBoxDimensions(box, liveValues[key] || box.label)

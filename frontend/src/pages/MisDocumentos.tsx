@@ -9,7 +9,7 @@ import {
   ImageUp,
   Mail,
   PenTool,
-  Send,
+  RefreshCw,
 } from 'lucide-react';
 import axios from 'axios';
 import * as pdfjsLib from 'pdfjs-dist';
@@ -17,11 +17,23 @@ import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { renderAsync } from 'docx-preview';
 import TopHeader from '../components/TopHeader';
 import PageFooter from '../components/PageFooter';
+import { apiFetch } from '../utils/api';
 import type { FieldDataType, DashRule, FieldLabel, MappedBox } from './AdminEditor';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+
+function authHeaders(extra: Record<string, string> = {}): Record<string, string> {
+  const token = localStorage.getItem('token');
+  return token ? { ...extra, Authorization: `Bearer ${token}` } : extra;
+}
+
+async function readServerError(res: Response): Promise<string> {
+  const body = (await res.json().catch(() => ({}))) as { detail?: unknown };
+  const detail = typeof body.detail === 'string' ? body.detail : '';
+  return `${res.status}${detail ? ` - ${detail}` : ''}`;
+}
 const PDF_SCALE = 1.5;
 const MIN_FONT = 6;
 
@@ -39,7 +51,10 @@ interface UserDocItem {
   boxes: MappedBox[];
   valores?: Record<string, string>;
   revocadoEnOrigen?: boolean;
+  accesoSolicitado?: boolean;
   enviado?: boolean;
+  completado?: boolean;
+  fecha_completado?: string | null;
 }
 
 type SaveStatus = 'idle' | 'saving' | 'saved' | 'error';
@@ -95,12 +110,16 @@ async function renderPdfPages(file: File, mount: HTMLElement, isCancelled: () =>
     canvas.style.width = `${viewport.width}px`;
     canvas.style.height = `${viewport.height}px`;
     canvas.style.display = 'block';
+    canvas.style.maxWidth = '100%';
+    canvas.style.height = 'auto';
 
     const wrap = document.createElement('div');
     wrap.dataset.pageIndex = String(n);
     wrap.className = 'mx-auto mb-4 bg-white shadow-md';
     wrap.style.width = `${viewport.width}px`;
-    wrap.style.height = `${viewport.height}px`;
+    wrap.style.height = 'auto';
+    wrap.style.maxWidth = '100%';
+    wrap.style.aspectRatio = `${viewport.width} / ${viewport.height}`;
     wrap.appendChild(canvas);
 
     if (isCancelled()) return;
@@ -156,6 +175,7 @@ function useAutoFit(ref: RefObject<HTMLElement | null>, fontMax: number, deps: R
 
 /** Resuelve el valor de una caja: labelId, id del campo definido y respaldo por texto normalizado. */
 function resolveBoxValue(box: MappedBox, values: Record<string, string>, labels: FieldLabel[]): string {
+  if (box.id && values[box.id] !== undefined && values[box.id] !== '') return values[box.id];
   const norm = (box.label || '').trim().toLowerCase();
   const defined = labels.find((l) => l.id === box.labelId || l.name.trim().toLowerCase() === norm);
   const keys = [box.labelId, defined?.id, box.label, norm].filter((k): k is string => !!k);
@@ -387,6 +407,7 @@ export default function MisDocumentos() {
   const [selectedDoc, setSelectedDoc] = useState<UserDocItem | null>(null);
   const [docFile, setDocFile] = useState<File | null>(null);
   const [loadingDocFile, setLoadingDocFile] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
   const [formValues, setFormValues] = useState<Record<string, string>>({});
 
@@ -398,6 +419,9 @@ export default function MisDocumentos() {
   const [generatedUrl, setGeneratedUrl] = useState('');
   const [downloading, setDownloading] = useState(false);
   const [errorNotice, setErrorNotice] = useState('');
+  const [confirmSend, setConfirmSend] = useState(false);
+  const [completed, setCompleted] = useState(false);
+  const [missingFields, setMissingFields] = useState<string[]>([]);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');
   const dirtyRef = useRef(false);
 
@@ -426,7 +450,7 @@ export default function MisDocumentos() {
   useEffect(() => {
     if (!usuario?.id) return;
     setLoadingList(true);
-    fetch(`${API_URL}/api/usuario/${usuario.id}/documentos`)
+    fetch(`${API_URL}/api/usuario/${usuario.id}/documentos`, { headers: authHeaders(), cache: 'no-store' })
       .then((res) => (res.ok ? res.json() : []))
       .then(async (data: UserDocItem[]) => {
         setDocuments(data);
@@ -443,6 +467,9 @@ export default function MisDocumentos() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [usuario?.id]);
 
+  // Solo el id y el tipo disparan el render: escribir en formValues o refrescar metadatos no repinta el visor.
+  const selectedDocId = selectedDoc?.id ?? null;
+  const selectedDocKind = selectedDoc?.kind ?? null;
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
@@ -450,7 +477,7 @@ export default function MisDocumentos() {
     host.innerHTML = '';
     setPageRects([]);
 
-    if (!docFile || !selectedDoc) return;
+    if (!docFile || !selectedDocId) return;
 
     let cancelled = false;
     const mount = document.createElement('div');
@@ -458,7 +485,7 @@ export default function MisDocumentos() {
 
     (async () => {
       try {
-        if (selectedDoc.kind === 'pdf') {
+        if (selectedDocKind === 'pdf') {
           await renderPdfPages(docFile, mount, () => cancelled);
         } else {
           await renderDocxPages(docFile, mount);
@@ -473,7 +500,7 @@ export default function MisDocumentos() {
       cancelled = true;
       mount.remove();
     };
-  }, [docFile, selectedDoc, measurePages]);
+  }, [docFile, selectedDocId, selectedDocKind, measurePages]);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -490,6 +517,17 @@ export default function MisDocumentos() {
     };
   }, [measurePages]);
 
+  async function solicitarAcceso(doc: UserDocItem) {
+    try {
+      await apiFetch(`/api/usuario/documentos/${encodeURIComponent(doc.id)}/solicitar-acceso`, { method: 'POST' });
+      const update = (item: UserDocItem) => item.id === doc.id ? { ...item, accesoSolicitado: true } : item;
+      setDocuments((prev) => prev.map(update));
+      setSelectedDoc((prev) => prev ? update(prev) : prev);
+    } catch (err) {
+      setErrorNotice(err instanceof Error ? err.message : 'No se pudo enviar la solicitud.');
+    }
+  }
+
   async function handleSelectDocument(doc: UserDocItem) {
     if (selectedDoc && selectedDoc.id !== doc.id) await flushDraft();
     setSelectedDoc(doc);
@@ -498,9 +536,11 @@ export default function MisDocumentos() {
     setSaveStatus('idle');
     setFormValues(doc.valores ?? {});
     setMailSentNotice('');
+    setConfirmSend(false);
+    setCompleted(!!doc.completado);
     setGeneratedUrl('');
     setErrorNotice('');
-    setAdminEmail(doc.adminEmail || 'admin@prueba.com');
+    setAdminEmail(doc.adminEmail || import.meta.env.VITE_ADMIN_EMAIL || 'admin@prueba.com');
     setUserEmail(usuario?.email || '');
     setLoadingDocFile(true);
 
@@ -508,16 +548,24 @@ export default function MisDocumentos() {
       setDocuments((prev) => prev.map((d) => (d.id === doc.id ? { ...d, visto: true } : d)));
       void fetch(`${API_URL}/api/usuario/documentos/${encodeURIComponent(doc.id)}/visto`, {
         method: 'PATCH',
+        headers: authHeaders(),
       });
     }
 
     try {
-      const fileRes = await fetch(`${API_URL}/api/documentos/${encodeURIComponent(doc.id)}/archivo`);
-      if (!fileRes.ok) throw new Error('No se pudo cargar el archivo');
+      const fileRes = await fetch(`${API_URL}/api/documentos/${encodeURIComponent(doc.id)}/archivo`, {
+        headers: authHeaders(),
+      });
+      if (!fileRes.ok) {
+        throw new Error(`No se pudo descargar el documento (${await readServerError(fileRes)}).`);
+      }
       const blob = await fileRes.blob();
-      setDocFile(new File([blob], doc.fileName, { type: blob.type }));
-    } catch {
-      setErrorNotice('No se pudo descargar el documento desde el servidor.');
+      const fileName = doc.fileName || `${doc.name}.${doc.kind || 'pdf'}`;
+      setDocFile(new File([blob], fileName, { type: blob.type }));
+    } catch (err) {
+      setErrorNotice(
+        err instanceof Error ? err.message : 'No se pudo descargar el documento desde el servidor.',
+      );
     } finally {
       setLoadingDocFile(false);
     }
@@ -528,37 +576,17 @@ export default function MisDocumentos() {
     const fieldBoxes = selectedDoc.boxes.filter((b) => b.kind === 'field');
     if (fieldBoxes.length === 0) return [];
 
-    const seen = new Set<string>();
-    const result: FieldLabel[] = [];
-
-    for (const box of fieldBoxes) {
-      const key = box.labelId || box.label;
-      if (seen.has(key)) continue;
-      seen.add(key);
-
-      const definedLabel = selectedDoc.labels.find(
-        (l) => l.id === box.labelId || l.name === box.label,
-      );
-      if (definedLabel) {
-        result.push(definedLabel);
-      } else {
-        result.push({
-          id: key,
-          name: box.label,
-          dataType: box.dataType,
-          dashRule: box.dashRule,
-        });
-      }
-    }
-    return result;
+    return fieldBoxes.map((box) => {
+      const same = fieldBoxes.filter((candidate) => (candidate.labelId || candidate.label) === (box.labelId || box.label));
+      const label = selectedDoc.labels.find((item) => item.id === box.labelId || item.name === box.label);
+      return { id: box.id, name: same.length > 1 ? `${label?.name || box.label} #${same.indexOf(box) + 1}` : (label?.name || box.label), dataType: box.dataType, dashRule: box.dashRule };
+    });
   }, [selectedDoc]);
 
   function handleInputChange(field: FieldLabel, rawValue: string) {
     const formatted = formatFieldValue(rawValue, field.dataType, field.dashRule);
     dirtyRef.current = true;
-    const alias = field.name.trim().toLowerCase();
-    // Se guarda también bajo el nombre normalizado para que visor y estampado resuelvan la misma clave.
-    setFormValues((prev) => ({ ...prev, [field.id]: formatted, [alias]: formatted }));
+    setFormValues((prev) => ({ ...prev, [field.id]: formatted }));
   }
 
   const saveDraft = useCallback(async (docId: string, valores: Record<string, string>) => {
@@ -568,7 +596,7 @@ export default function MisDocumentos() {
         `${API_URL}/api/usuario/documentos/${encodeURIComponent(docId)}/borrador`,
         {
           method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
+          headers: authHeaders({ 'Content-Type': 'application/json' }),
           body: JSON.stringify({ valores }),
         },
       );
@@ -592,13 +620,30 @@ export default function MisDocumentos() {
     }
   }
 
-  async function refreshDocuments() {
+  async function refreshDocuments(opts: { keepSelection?: boolean } = {}) {
     if (!usuario?.id) return;
+    const keepSelection = opts.keepSelection ?? true;
     try {
-      const res = await fetch(`${API_URL}/api/usuario/${usuario.id}/documentos`);
-      if (res.ok) setDocuments(await res.json());
+      setRefreshing(true);
+      const res = await fetch(`${API_URL}/api/usuario/${usuario.id}/documentos`, { headers: authHeaders(), cache: 'no-store' });
+      if (res.ok) {
+        const fresh: UserDocItem[] = await res.json();
+        setDocuments(fresh);
+        if (keepSelection && selectedDoc) {
+          const listed = fresh.find((item) => item.id === selectedDoc.id);
+          if (listed) {
+            const detailRes = await fetch(`${API_URL}/api/documentos/${encodeURIComponent(listed.id)}`, { headers: authHeaders(), cache: 'no-store' });
+            const detail = detailRes.ok ? await detailRes.json() as UserDocItem : listed;
+            const next = { ...listed, ...detail };
+            setSelectedDoc(next);
+            setFormValues((current) => ({ ...next.valores, ...current }));
+          }
+        }
+      }
     } catch {
       /* se conserva la lista en memoria */
+    } finally {
+      setRefreshing(false);
     }
   }
 
@@ -615,17 +660,29 @@ export default function MisDocumentos() {
   }, [formValues, selectedDoc, saveDraft]);
 
   async function handleBackToList() {
-    // Guarda de inmediato cualquier cambio pendiente del debounce antes de salir.
-    await flushDraft();
-    setSelectedDoc(null);
-    setDocFile(null);
-    window.history.pushState({}, '', '/mis-documentos');
-    await refreshDocuments();
+    try {
+      // Guarda de inmediato cualquier cambio pendiente del debounce antes de salir.
+      await flushDraft();
+    } catch {
+      /* nunca bloquear la salida por un fallo al guardar */
+    } finally {
+      dirtyRef.current = false;
+      window.history.replaceState({}, '', '/mis-documentos');
+      setSelectedDoc(null);
+      setDocFile(null);
+      setFormValues({});
+      setSaveStatus('idle');
+    }
+    // keepSelection:false evita que el refresco reabra el documento recién cerrado.
+    await refreshDocuments({ keepSelection: false });
   }
 
-  async function handleSendEmails(e: React.FormEvent) {
-    e.preventDefault();
+  async function handleSendEmails(e?: React.FormEvent) {
+    e?.preventDefault();
     if (!selectedDoc || !usuario?.id) return;
+    const missing = activeFields.filter((field) => !resolveBoxValue({ id: field.id, label: field.name, labelId: field.id } as MappedBox, formValues, selectedDoc.labels).trim());
+    setMissingFields(missing.map((field) => field.id));
+    if (missing.length) { setErrorNotice(`Completa los campos requeridos: ${missing.map((field) => field.name).join(', ')}.`); setConfirmSend(false); return; }
 
     setSendingMail(true);
     setMailSentNotice('');
@@ -633,23 +690,20 @@ export default function MisDocumentos() {
     setErrorNotice('');
 
     try {
-      const res = await fetch(
-        `${API_URL}/api/usuario/documentos/${encodeURIComponent(selectedDoc.id)}/enviar`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
+      const data = await apiFetch<{ ok: boolean; message: string; archivo_generado_url: string; fecha_completado: string }>(
+        `/api/usuario/documentos/${encodeURIComponent(selectedDoc.id)}/finalizar-y-enviar`,
+        { method: 'POST', body: JSON.stringify({
             usuario_id: usuario.id,
             correo_usuario: userEmail,
             correo_admin: adminEmail,
             valores: formValues,
-          }),
-        },
+          }) },
       );
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || 'Error al enviar los correos');
-      setMailSentNotice(data.mensaje);
-      setGeneratedUrl(data.url_descarga || '');
+      setMailSentNotice(data.message);
+      setGeneratedUrl(data.archivo_generado_url || '');
+      setCompleted(data.ok);
+      setConfirmSend(false);
+      setDocuments((prev) => prev.map((d) => d.id === selectedDoc.id ? { ...d, completado: true, fecha_completado: data.fecha_completado } : d));
     } catch (err) {
       setErrorNotice(err instanceof Error ? err.message : 'No se pudo procesar el envío');
     } finally {
@@ -679,10 +733,10 @@ export default function MisDocumentos() {
   }
 
   return (
-    <div className="relative flex min-h-screen w-full flex-col bg-bg-light">
+    <div className="relative flex min-h-screen w-full flex-col overflow-x-hidden bg-bg-light">
       <TopHeader active="documentos" />
 
-      <main className="flex-1 p-10">
+      <main className="min-w-0 flex-1 p-4 md:p-6 lg:p-10">
         {!selectedDoc ? (
           /* ==================== LISTA CON FORMA Y COLOR ORIGINAL DE TARJETAS ==================== */
           <>
@@ -690,6 +744,7 @@ export default function MisDocumentos() {
             <p className="text-sm font-semibold text-primary">
               {documents.length} {documents.length === 1 ? 'disponible' : 'disponibles'}
             </p>
+            <button type="button" onClick={() => void refreshDocuments()} disabled={refreshing} className="mt-3 inline-flex items-center gap-2 rounded-[20px] bg-white px-4 py-2 text-xs font-semibold text-primary shadow-sm disabled:opacity-60"><RefreshCw className={`h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} />Recargar plantilla</button>
 
             {loadingList ? (
               <p className="mt-[30px] text-sm text-muted">Cargando documentos…</p>
@@ -705,7 +760,7 @@ export default function MisDocumentos() {
                     <div
                       key={doc.id}
                       onClick={() => void handleSelectDocument(doc)}
-                      className="flex cursor-pointer items-center justify-between gap-5"
+                      className="flex min-w-0 flex-wrap items-center justify-between gap-3"
                     >
                       <div
                         className={`flex h-[45px] flex-1 items-center rounded-[10px] bg-card px-4 text-sm font-semibold text-main transition-all duration-200 hover:bg-card-hover ${
@@ -714,8 +769,11 @@ export default function MisDocumentos() {
                       >
                         <span className="truncate">{doc.name}</span>
                       </div>
+                      {doc.revocadoEnOrigen && (doc.accesoSolicitado
+                        ? <span className="rounded-full bg-amber-100 px-3 py-2 text-xs font-semibold text-amber-800">Solicitud de acceso enviada</span>
+                        : <button type="button" onClick={(e) => { e.stopPropagation(); void solicitarAcceso(doc); }} className="rounded-full bg-primary px-3 py-2 text-xs font-semibold text-white">Solicitar acceso para llenar</button>)}
 
-                      <div className="flex min-w-[120px] items-center gap-2 text-sm font-semibold text-main">
+                      <div className="flex shrink-0 items-center gap-2 text-sm font-semibold text-main">
                         {doc.visto ? 'Disponible' : 'Nuevo'}
                         <Download className="h-4 w-4" strokeWidth={2.5} />
                       </div>
@@ -729,7 +787,7 @@ export default function MisDocumentos() {
           /* ==================== VISTA DE LLENADO EN TIEMPO REAL ==================== */
           <>
             <div className="mb-5 flex flex-wrap items-center justify-between gap-4">
-              <div className="flex items-center gap-3">
+              <div className="flex min-w-0 flex-wrap items-center gap-3">
                 <button
                   type="button"
                   onClick={() => void handleBackToList()}
@@ -738,6 +796,7 @@ export default function MisDocumentos() {
                   <ArrowLeft className="h-4 w-4" />
                   Volver a mis documentos
                 </button>
+                <button type="button" onClick={() => void refreshDocuments()} disabled={refreshing} className="inline-flex cursor-pointer items-center gap-1.5 rounded-[20px] bg-white px-4 py-2 text-xs font-semibold text-primary shadow-sm disabled:opacity-60"><RefreshCw className={`h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} />Recargar plantilla</button>
                 <div>
                   <h2 className="text-xl font-bold text-main">{selectedDoc.name}</h2>
                   {saveStatus !== 'idle' && (
@@ -788,7 +847,7 @@ export default function MisDocumentos() {
                     >
                       {activeFields.map((field) => (
                         <div key={field.id} className="flex flex-col gap-1">
-                          <label className="text-xs font-semibold text-main">{field.name}</label>
+                          <label className={`text-xs font-semibold ${missingFields.includes(field.id) ? 'text-brand-red' : 'text-main'}`}>{field.name}{missingFields.includes(field.id) && ' · requerido'}</label>
 
                           {field.dataType === 'signature' ? (
                             <UserSignaturePad
@@ -807,7 +866,7 @@ export default function MisDocumentos() {
                                     ? 'Ej: 7777-8888'
                                     : `Escribe ${field.name.toLowerCase()}…`
                               }
-                              className="w-full rounded-[10px] bg-bg-light px-3 py-2 text-sm text-main outline-none focus:ring-2 focus:ring-primary/40"
+                              className={`w-full rounded-[10px] bg-bg-light px-3 py-2 text-sm text-main outline-none focus:ring-2 focus:ring-primary/40 ${missingFields.includes(field.id) ? 'ring-2 ring-brand-red' : ''}`}
                             />
                           )}
                         </div>
@@ -816,17 +875,17 @@ export default function MisDocumentos() {
                   )}
                 </section>
 
-                {/* Envío por correo (correo del administrador oculto por defecto) */}
+                {/* Confirmación del documento y destino del correo */}
                 <section className="rounded-[15px] bg-white p-5 shadow-sm">
                   <div className="mb-3 flex items-center gap-2">
                     <Mail className="h-4 w-4 text-primary" />
-                    <h3 className="text-sm font-bold text-main">Enviar documento por correo</h3>
+                    <h3 className="text-sm font-bold text-main">Finalizar documento</h3>
                   </div>
                   <p className="mb-3 text-[11px] text-muted">
                     Ingresa el correo donde deseas recibir el documento completado (por defecto aparece el tuyo):
                   </p>
 
-                  <form onSubmit={handleSendEmails} className="flex flex-col gap-3">
+                  {completed ? <div className="space-y-3"><div className="flex items-start gap-2 rounded-[10px] bg-green-50 p-3 text-sm font-semibold text-green-700"><CheckCircle2 className="h-5 w-5 shrink-0"/><span>Documento completado y enviado. {mailSentNotice}</span></div>{generatedUrl && <button type="button" onClick={() => void handleDownloadGenerated()} disabled={downloading} className="inline-flex w-full items-center justify-center gap-2 rounded-[20px] border border-primary bg-white px-4 py-2.5 text-xs font-semibold text-primary"><Download className="h-3.5 w-3.5"/>{downloading?'Descargando…':'Descargar copia'}</button>}</div> : <div className="flex flex-col gap-3">
                     <label className="flex flex-col gap-1 text-[11px] font-semibold text-muted">
                       Correo de destino
                       <input
@@ -840,38 +899,21 @@ export default function MisDocumentos() {
                     </label>
 
                     <button
-                      type="submit"
-                      disabled={sendingMail}
+                      type="button"
+                      onClick={() => { setMissingFields([]); setErrorNotice(''); const missing = activeFields.filter((field) => !resolveBoxValue({ id: field.id, label: field.name, labelId: field.id } as MappedBox, formValues, selectedDoc.labels).trim()); setMissingFields(missing.map((field) => field.id)); if (missing.length) setErrorNotice(`Completa los campos requeridos: ${missing.map((field) => field.name).join(', ')}.`); else setConfirmSend(true); }}
+                      disabled={sendingMail || !!selectedDoc.revocadoEnOrigen}
                       className="mt-1 inline-flex w-full cursor-pointer items-center justify-center gap-2 rounded-[20px] border-none bg-primary px-4 py-2.5 text-xs font-semibold text-white transition-colors hover:bg-primary-dark disabled:opacity-60"
                     >
-                      <Send className="h-3.5 w-3.5" />
-                      {sendingMail ? 'Enviando documento…' : 'Enviar documento'}
+                      <CheckCircle2 className="h-4 w-4" />
+                      Terminé el documento
                     </button>
 
-                    {mailSentNotice && (
-                      <div className="flex items-start gap-2 rounded-[10px] bg-primary/10 p-2.5 text-[11px] font-semibold text-primary">
-                        <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
-                        <span>{mailSentNotice}</span>
-                      </div>
-                    )}
-
-                    {generatedUrl && (
-                      <button
-                        type="button"
-                        onClick={() => void handleDownloadGenerated()}
-                        disabled={downloading}
-                        className="inline-flex w-full cursor-pointer items-center justify-center gap-2 rounded-[20px] border border-primary bg-white px-4 py-2.5 text-xs font-semibold text-primary transition-colors hover:bg-primary/10 disabled:opacity-60"
-                      >
-                        <Download className="h-3.5 w-3.5" />
-                        {downloading ? 'Descargando…' : 'Descargar PDF'}
-                      </button>
-                    )}
-                  </form>
+                  </div>}
                 </section>
               </aside>
 
               {/* COLUMNA DERECHA: DOCUMENTO LLENÁNDOSE EN TIEMPO REAL */}
-              <div className="min-h-[500px] min-w-0 flex-1 rounded-[15px] bg-card p-5 lg:h-full lg:overflow-y-auto">
+              <div className="min-h-[500px] min-w-0 flex-1 overflow-x-auto rounded-[15px] bg-card p-3 sm:p-5 lg:h-full lg:overflow-y-auto">
                 {loadingDocFile ? (
                   <p className="py-12 text-center text-sm font-semibold text-muted">
                     Cargando documento…
@@ -911,6 +953,7 @@ export default function MisDocumentos() {
             </div>
           </>
         )}
+        {confirmSend && selectedDoc && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"><section role="dialog" aria-modal="true" aria-labelledby="confirm-send-title" className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-[20px] bg-white p-6 shadow-xl"><h2 id="confirm-send-title" className="mb-2 text-xl font-bold text-main">Confirmar envío</h2><p className="mb-4 text-sm text-muted">El documento se generará y se enviará por correo.</p><form onSubmit={(e)=>void handleSendEmails(e)} className="space-y-4"><label className="block text-xs font-semibold text-muted">Tu correo<input required type="email" value={userEmail} onChange={e=>setUserEmail(e.target.value)} className="mt-1 w-full rounded-[10px] bg-bg-light px-3 py-2.5 text-sm text-main"/></label><label className="block text-xs font-semibold text-muted">Correo del administrador (CC)<input readOnly value={adminEmail} className="mt-1 w-full rounded-[10px] bg-bg-light px-3 py-2.5 text-sm text-muted"/></label><div className="flex flex-wrap justify-end gap-2"><button type="button" onClick={()=>setConfirmSend(false)} className="rounded-[20px] bg-bg-light px-4 py-2.5 text-xs font-semibold text-main">Cancelar</button><button disabled={sendingMail} className="rounded-[20px] bg-primary px-4 py-2.5 text-xs font-semibold text-white disabled:opacity-60">{sendingMail?'Generando y enviando documento…':'Confirmar y enviar documento'}</button></div></form></section></div>}
       </main>
 
       <PageFooter />
